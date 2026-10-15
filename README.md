@@ -27,6 +27,27 @@ Baixe a versão mais recente diretamente na página de [Releases](https://github
 
 ---
 
+## 🍏 Instalação no macOS (Gatekeeper / Quarentena)
+
+Por se tratar de um aplicativo distribuído diretamente sem assinatura da Mac App Store, o Gatekeeper do macOS pode exibir o aviso:
+> *"Geenjutsu está danificado e não pode ser aberto"* ou *"Não foi possível verificar o desenvolvedor"*.
+
+Para liberar e abrir o aplicativo normalmente:
+
+1. Baixe o instalador `.dmg` correspondente à arquitetura do seu Mac (**Apple Silicon M1/M2/M3/M4** ➔ `arm64` ou **Intel** ➔ `x64`).
+2. Abra o arquivo `.dmg` e arraste o ícone do **Geenjutsu** para a pasta **Aplicativos** (`Applications`).
+3. Abra o **Terminal** do macOS (Spotlight: `cmd + espaço` ➔ Terminal).
+4. Cole o comando abaixo e aperte Enter:
+
+```bash
+sudo xattr -cr /Applications/Geenjutsu.app
+```
+*(Será solicitada a senha do seu usuário do Mac para confirmar a permissão de administrador)*
+
+5. Pronto! Agora o Geenjutsu abrirá diretamente pelo Launchpad ou pasta Aplicativos sem nenhum bloqueio.
+
+---
+
 ## 🛠️ Desenvolvimento Local
 
 ```bash
