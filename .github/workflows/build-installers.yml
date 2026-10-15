@@ -1,0 +1,87 @@
+name: Build & Release Installers
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g. v1.0.0)'
+        required: false
+        default: ''
+
+jobs:
+  build-and-release:
+    name: Build & Release (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            build-script: npm run dist:win
+            artifact-pattern: release/*.exe
+          - os: ubuntu-latest
+            build-script: npm run dist:linux
+            artifact-pattern: release/*.deb
+          - os: macos-latest
+            build-script: npm run dist:mac
+            artifact-pattern: release/*.dmg
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build Application & Installer
+        run: ${{ matrix.build-script }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract version tag
+        id: get_version
+        shell: bash
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            TAG="${{ github.event.inputs.version }}"
+          else
+            VERSION=$(node -p "require('./package.json').version")
+            TAG="v$VERSION"
+          fi
+          echo "TAG_NAME=$TAG" >> $GITHUB_ENV
+
+      - name: Prepare Release Files (Linux deb aliases)
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          for f in release/*_x64.deb; do
+            [ -f "$f" ] && cp "$f" "${f/_x64.deb/_amd64.deb}" || true
+          done
+          for f in release/*_amd64.deb; do
+            [ -f "$f" ] && cp "$f" "${f/_amd64.deb/_x64.deb}" || true
+          done
+
+      - name: Publish to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG_NAME }}
+          name: Geenjutsu ${{ env.TAG_NAME }}
+          files: ${{ matrix.artifact-pattern }}
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

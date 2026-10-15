@@ -1,0 +1,77 @@
+{
+  "$schema": "https://raw.githubusercontent.com/electron-userland/electron-builder/master/packages/app-builder-lib/scheme.json",
+  "appId": "com.geenjutsu.app",
+  "productName": "Geenjutsu",
+  "copyright": "Copyright © 2026 Geenjutsu",
+  "directories": {
+    "output": "release",
+    "buildResources": "public"
+  },
+  "files": [
+    "dist/**/*",
+    "dist-electron/**/*",
+    "public/**/*",
+    "package.json"
+  ],
+  "asar": true,
+  "asarUnpack": [
+    "**/*.node",
+    "dist-electron/camoufoxWorker.mjs"
+  ],
+  "win": {
+    "target": [
+      {
+        "target": "nsis",
+        "arch": [
+          "x64"
+        ]
+      }
+    ],
+    "icon": "public/icon.ico",
+    "artifactName": "${productName}-Setup-${version}-${arch}.${ext}"
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "shortcutName": "Geenjutsu",
+    "installerIcon": "public/icon.ico",
+    "uninstallerIcon": "public/icon.ico"
+  },
+  "linux": {
+    "target": [
+      {
+        "target": "deb",
+        "arch": [
+          "x64"
+        ]
+      }
+    ],
+    "icon": "public/icon.png",
+    "category": "Network",
+    "maintainer": "Geenjutsu <contact@geenjutsu.app>",
+    "synopsis": "Geenjutsu - Advanced Anti-Detect Browser Studio",
+    "description": "Geenjutsu Anti-Detect Browser Studio with fingerprint isolation, multi-profile management, and automation.",
+    "artifactName": "${name}_${version}_${arch}.${ext}"
+  },
+  "deb": {
+    "priority": "optional"
+  },
+  "mac": {
+    "category": "public.app-category.developer-tools",
+    "target": [
+      {
+        "target": "dmg",
+        "arch": [
+          "x64",
+          "arm64"
+        ]
+      }
+    ],
+    "icon": "public/icon.png",
+    "gatekeeperAssess": false,
+    "hardenedRuntime": false,
+    "artifactName": "${productName}-${version}-${arch}.${ext}"
+  }
+}

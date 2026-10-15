@@ -1,0 +1,16 @@
+{
+  "version": "1.0.0",
+  "minRequiredVersion": "1.0.0",
+  "releaseDate": "2026-10-15",
+  "notes": [
+    "Lançamento inicial do Geenjutsu Studio",
+    "Anti-detect browser studio com isolamento multicontas e fingerprinting avançado",
+    "Compilação e suporte multiplataforma (Windows, Linux, macOS)"
+  ],
+  "downloadUrls": {
+    "win": "https://github.com/IluminCloud-Applications/geenjutsu/releases/latest",
+    "mac": "https://github.com/IluminCloud-Applications/geenjutsu/releases/latest",
+    "linux": "https://github.com/IluminCloud-Applications/geenjutsu/releases/latest",
+    "page": "https://github.com/IluminCloud-Applications/geenjutsu/releases/latest"
+  }
+}
