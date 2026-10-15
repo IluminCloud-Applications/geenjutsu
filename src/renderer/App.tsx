@@ -16,10 +16,19 @@ import { ReportModal } from './components/report/ReportModal';
 import { OnboardingModal } from './components/onboarding/OnboardingModal';
 import { CloseConfirmModal } from './components/layout/CloseConfirmModal';
 import { ProxyTestModal } from './components/proxies/ProxyTestModal';
+import { UpdateModal } from './components/updater/UpdateModal';
 import { useProfiles } from './context/ProfileContext';
 
 export const App: React.FC = () => {
-  const { activeTab, isAppLocked, testingProxyTarget, setTestingProxyTarget } = useProfiles();
+  const {
+    activeTab,
+    isAppLocked,
+    testingProxyTarget,
+    setTestingProxyTarget,
+    isUpdateModalOpen,
+    setIsUpdateModalOpen,
+    updateData,
+  } = useProfiles();
 
   // If app lock is active, show only TitleBar with window controls and LockScreen
   if (isAppLocked) {
@@ -70,6 +79,11 @@ export const App: React.FC = () => {
         isOpen={!!testingProxyTarget}
         onClose={() => setTestingProxyTarget(null)}
         target={testingProxyTarget}
+      />
+      <UpdateModal
+        isOpen={isUpdateModalOpen}
+        onClose={() => setIsUpdateModalOpen(false)}
+        updateData={updateData}
       />
     </div>
   );

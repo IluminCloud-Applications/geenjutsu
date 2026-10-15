@@ -12,8 +12,9 @@ const geenjutsuApi = {
   getOnboardingCompleted: () => ipcRenderer.invoke('settings:get-onboarding-completed'),
   setOnboardingCompleted: (completed: boolean) => ipcRenderer.invoke('settings:set-onboarding-completed', completed),
 
-  // External link
+  // External link and App Info
   openExternal: (url: string) => ipcRenderer.invoke('app:open-external', url),
+  getAppVersion: () => ipcRenderer.invoke('app:get-version'),
 
   // Browser Profile Operations (Camoufox Anti-Detect Engine)
   launchProfile: (profile: any) => ipcRenderer.invoke('profiles:launch', profile),

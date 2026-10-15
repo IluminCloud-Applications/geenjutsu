@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { clsx } from 'clsx';
 import { Modal } from '../components/ui/Modal';
 import { Button } from '../components/ui/Button';
@@ -17,9 +17,31 @@ export const SettingsModal: React.FC = () => {
     setIsSecurityModalOpen,
     closeAction,
     setCloseAction,
+    updateData,
+    setIsUpdateModalOpen,
+    checkForUpdates,
   } = useProfiles();
   const { locale, setLocale, t } = useI18n();
   const { theme, setTheme } = useTheme();
+
+  const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
+  const [checkFeedback, setCheckFeedback] = useState<string | null>(null);
+
+  const handleCheckUpdate = async () => {
+    setIsCheckingUpdate(true);
+    setCheckFeedback(null);
+    try {
+      const res = await checkForUpdates(true);
+      if (res.hasUpdate) {
+        setIsUpdateModalOpen(true);
+      } else {
+        setCheckFeedback('Versão mais recente');
+        setTimeout(() => setCheckFeedback(null), 3500);
+      }
+    } finally {
+      setIsCheckingUpdate(false);
+    }
+  };
 
   const toggleBtn = (isActive: boolean) =>
     clsx(
@@ -48,9 +70,38 @@ export const SettingsModal: React.FC = () => {
             <AppIcon sizeClass="h-10 w-auto max-w-[64px]" className="flex-shrink-0" />
             <div className="flex flex-col justify-center min-w-0">
               <BrandTextLogo heightClass="h-4" className="mb-1" />
-              <span className="text-[11px] text-[var(--muted)] font-mono leading-none">
-                v1.0.0
-              </span>
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] text-[var(--muted)] font-mono leading-none">
+                  v{updateData?.currentVersion || '1.0.0'}
+                </span>
+                <button
+                  type="button"
+                  onClick={handleCheckUpdate}
+                  disabled={isCheckingUpdate}
+                  className="text-[10px] text-red-500 hover:text-red-400 font-medium transition-colors cursor-pointer flex items-center gap-1 disabled:opacity-50"
+                  title="Verificar atualizações no GitHub"
+                >
+                  <i
+                    className={clsx(
+                      isCheckingUpdate
+                        ? 'ri-loader-4-line ri-spin'
+                        : updateData?.hasUpdate
+                        ? 'ri-sparkling-fill'
+                        : 'ri-refresh-line',
+                      'text-xs'
+                    )}
+                  />
+                  <span>
+                    {isCheckingUpdate
+                      ? 'Verificando...'
+                      : checkFeedback
+                      ? checkFeedback
+                      : updateData?.hasUpdate
+                      ? 'Nova versão!'
+                      : 'Verificar update'}
+                  </span>
+                </button>
+              </div>
             </div>
           </div>
 

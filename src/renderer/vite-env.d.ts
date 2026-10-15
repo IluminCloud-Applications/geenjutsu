@@ -13,6 +13,7 @@ interface Window {
     setOnboardingCompleted?: (completed: boolean) => Promise<boolean>;
     onRequestClose: (callback: () => void) => () => void;
     openExternal: (url: string) => Promise<boolean>;
+    getAppVersion?: () => Promise<string>;
     launchProfile: (profile: any) => Promise<{ success: boolean; error?: string }>;
     stopProfile: (id: string) => Promise<{ success: boolean; error?: string }>;
     getRunningProfiles: () => Promise<string[]>;

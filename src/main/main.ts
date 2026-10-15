@@ -417,6 +417,10 @@ app.whenReady().then(() => {
     return false;
   });
 
+  ipcMain.handle('app:get-version', () => {
+    return app.getVersion();
+  });
+
   // Browser Profile Operations IPC
   ipcMain.handle('profiles:launch', async (_, profileData: any) => {
     try {

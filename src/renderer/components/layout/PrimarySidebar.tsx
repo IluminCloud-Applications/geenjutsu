@@ -13,6 +13,8 @@ export const PrimarySidebar: React.FC = () => {
     setIsReportModalOpen,
     isSecurityEnabled,
     setIsSecurityModalOpen,
+    updateData,
+    setIsUpdateModalOpen,
   } = useProfiles();
   const { t } = useI18n();
   const { theme, toggleTheme } = useTheme();
@@ -71,6 +73,25 @@ export const PrimarySidebar: React.FC = () => {
 
       {/* Bottom Utility Controls */}
       <div className="flex flex-col items-center gap-1 w-full px-2 pb-1 pt-2 border-t border-[var(--border)]/50">
+        {/* Update Notification */}
+        {updateData?.hasUpdate && (
+          <button
+            type="button"
+            onClick={() => setIsUpdateModalOpen(true)}
+            title={`Atualização v${updateData.latestVersion} disponível`}
+            className="w-full flex flex-col items-center justify-center py-2 px-1 rounded-xl bg-red-500/10 text-red-500 hover:bg-red-500/20 border border-red-500/30 transition-all cursor-pointer group relative mb-1"
+          >
+            <span className="relative flex h-2 w-2 mb-1">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500"></span>
+            </span>
+            <i className="ri-sparkling-fill text-[16px] leading-none mb-1 text-red-500 group-hover:scale-110 transition-transform" />
+            <span className="text-[9px] tracking-tight leading-none text-center font-bold text-red-500">
+              Update
+            </span>
+          </button>
+        )}
+
         {/* Theme Toggle */}
         <button
           type="button"

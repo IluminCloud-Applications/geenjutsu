@@ -19,6 +19,7 @@ import {
 } from '../../types';
 import { parseProxyString, detectCountryFromHost } from '../utils/proxyParser';
 import { ProxyTestTarget } from '../components/proxies/ProxyTestModal';
+import { UpdateService, UpdateCheckResult } from '../services/updateService';
 
 interface ProfileContextType {
   testingProxyTarget: ProxyTestTarget | null;
@@ -143,6 +144,11 @@ interface ProfileContextType {
     trash: number;
     [key: string]: number;
   };
+  // Update System
+  updateData: UpdateCheckResult | null;
+  isUpdateModalOpen: boolean;
+  setIsUpdateModalOpen: (open: boolean) => void;
+  checkForUpdates: (force?: boolean) => Promise<UpdateCheckResult>;
 }
 
 const DEFAULT_FOLDERS: Folder[] = [];
@@ -472,6 +478,35 @@ export const ProfileProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
   const [isReportModalOpen, setIsReportModalOpen] = useState<boolean>(false);
   const [isImportProfileModalOpen, setIsImportProfileModalOpen] = useState<boolean>(false);
+  const [updateData, setUpdateData] = useState<UpdateCheckResult | null>(null);
+  const [isUpdateModalOpen, setIsUpdateModalOpen] = useState<boolean>(false);
+
+  const checkForUpdates = useCallback(async (force = false) => {
+    try {
+      const result = await UpdateService.checkForUpdates(force);
+      setUpdateData(result);
+      return result;
+    } catch (err) {
+      console.error('Error checking updates:', err);
+      return {
+        hasUpdate: false,
+        currentVersion: '1.0.0',
+        latestVersion: '1.0.0',
+        downloadUrl: '',
+      };
+    }
+  }, []);
+
+  useEffect(() => {
+    const timer = setTimeout(async () => {
+      const res = await checkForUpdates();
+      if (res.hasUpdate) {
+        setIsUpdateModalOpen(true);
+      }
+    }, 2000);
+
+    return () => clearTimeout(timer);
+  }, [checkForUpdates]);
   const [privacyConfig, setPrivacyConfig] = useState<PrivacyConfig>(() => {
     const saved = localStorage.getItem('geenjutsu_privacy_config');
     if (saved) {
@@ -1555,6 +1590,11 @@ export const ProfileProvider: React.FC<{ children: React.ReactNode }> = ({ child
         setIsCloseConfirmModalOpen,
         handleCloseApp,
         confirmCloseApp,
+        // Update System
+        updateData,
+        isUpdateModalOpen,
+        setIsUpdateModalOpen,
+        checkForUpdates,
       }}
     >
       {children}
