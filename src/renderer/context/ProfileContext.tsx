@@ -589,7 +589,8 @@ export const ProfileProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const repairProfileTimestamps = (list: Profile[]): Profile[] => {
     return list.map(p => {
       if (p.id && typeof p.id === 'string' && p.id.startsWith('p-')) {
-        const realTs = Number(p.id.replace('p-', ''));
+        const parts = p.id.replace('p-', '').split('-');
+        const realTs = Number(parts[0]);
         if (!isNaN(realTs) && realTs > 1700000000000 && (!p.createdAt || p.createdAt < realTs - 86400000 * 2)) {
           return { ...p, createdAt: realTs, updatedAt: realTs };
         }
@@ -1394,12 +1395,15 @@ export const ProfileProvider: React.FC<{ children: React.ReactNode }> = ({ child
       return true;
     })
     .sort((a, b) => {
+      // 1. Perfis fixados permanecem no topo (ordenados por pinnedAt desc)
       if (a.isPinned && !b.isPinned) return -1;
       if (!a.isPinned && b.isPinned) return 1;
       if (a.isPinned && b.isPinned) {
-        return (b.pinnedAt || 0) - (a.pinnedAt || 0);
+        const pinDiff = (b.pinnedAt || 0) - (a.pinnedAt || 0);
+        if (pinDiff !== 0) return pinDiff;
       }
-      return 0;
+      // 2. Ordem decrescente por horário de criação (createdAt desc)
+      return (b.createdAt || 0) - (a.createdAt || 0);
     });
 
   // Filtered folders for folders view
