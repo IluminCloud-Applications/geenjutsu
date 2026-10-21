@@ -6,9 +6,11 @@ import { Button } from '../ui/Button';
 import { Badge } from '../ui/Badge';
 import { useProfiles } from '../../context/ProfileContext';
 import { useI18n } from '../../context/I18nContext';
-import { ProfileCreateInput } from '../../types';
+import { ProfileCreateInput, AndroidDeviceSpec } from '../../types';
 import { parseProxyString, buildProxyString, getCountryFlag } from '../../utils/proxyParser';
 import { generateProfileFingerprint } from '../../utils/fingerprintGenerator';
+import { DeviceCatalogService } from '../../../shared/deviceCatalog';
+import { AndroidSetupModal } from './AndroidSetupModal';
 import { clsx } from 'clsx';
 
 export const CreateProfileModal: React.FC = () => {
@@ -59,8 +61,54 @@ export const CreateProfileModal: React.FC = () => {
         }
       }
       setFolderId('');
+      setRuntime('browser');
+      setIsAndroidTooltipOpen(false);
+      setSelectedAndroidDevice(DeviceCatalogService.getRandom(undefined, '12'));
+
+      // Check android requirements
+      if (window.geenjutsuApi?.checkAndroidDependencies) {
+        window.geenjutsuApi.checkAndroidDependencies().then(res => {
+          setIsAndroidReady(res.allOk);
+        }).catch(() => {
+          setIsAndroidReady(false);
+        });
+      }
     }
   }, [isCreateModalOpen, selectedFolderId, folders]);
+
+  const [runtime, setRuntime] = useState<'browser' | 'android'>('browser');
+  const [isAndroidReady, setIsAndroidReady] = useState(false);
+  const [isAndroidSetupModalOpen, setIsAndroidSetupModalOpen] = useState(false);
+  const [isAndroidTooltipOpen, setIsAndroidTooltipOpen] = useState(false);
+  const tooltipTimeoutRef = React.useRef<NodeJS.Timeout | null>(null);
+  const [selectedAndroidDevice, setSelectedAndroidDevice] = useState<AndroidDeviceSpec>(() => DeviceCatalogService.getRandom(undefined, '12'));
+
+  const handleMouseEnterAndroid = () => {
+    if (tooltipTimeoutRef.current) {
+      clearTimeout(tooltipTimeoutRef.current);
+      tooltipTimeoutRef.current = null;
+    }
+    if (!isAndroidReady) {
+      setIsAndroidTooltipOpen(true);
+    }
+  };
+
+  const handleMouseLeaveAndroid = () => {
+    if (tooltipTimeoutRef.current) {
+      clearTimeout(tooltipTimeoutRef.current);
+    }
+    tooltipTimeoutRef.current = setTimeout(() => {
+      setIsAndroidTooltipOpen(false);
+    }, 200);
+  };
+
+  React.useEffect(() => {
+    return () => {
+      if (tooltipTimeoutRef.current) {
+        clearTimeout(tooltipTimeoutRef.current);
+      }
+    };
+  }, []);
 
   const [platform, setPlatform] = useState<'facebook' | 'chrome' | 'tiktok' | 'google' | 'amazon' | 'general'>('facebook');
   const [os, setOs] = useState<'mac' | 'windows' | 'linux'>('windows');
@@ -180,19 +228,40 @@ export const CreateProfileModal: React.FC = () => {
 
     for (let i = 0; i < count; i++) {
       const profileName = i === 0 ? name.trim() : `${name.trim()} #${i + 1}`;
-      const fingerprint = generateProfileFingerprint(os, proxyConfig);
 
-      inputs.push({
-        name: profileName,
-        folderId: folderId || '',
-        platform,
-        os,
-        browser: browserLabel,
-        notes: '',
-        tags,
-        proxy: proxyConfig,
-        fingerprint,
-      });
+      if (runtime === 'android') {
+        const dev = selectedAndroidDevice;
+        inputs.push({
+          name: profileName,
+          folderId: folderId || '',
+          platform,
+          os: 'android',
+          browser: `${dev.brand} ${dev.name} (Android ${dev.androidVersion})`,
+          notes: '',
+          tags,
+          proxy: proxyConfig,
+          runtime: 'android',
+          device: dev,
+          androidVersion: dev.androidVersion,
+          width: dev.width,
+          height: dev.height,
+          dpi: dev.dpi,
+        });
+      } else {
+        const fingerprint = generateProfileFingerprint(os, proxyConfig);
+        inputs.push({
+          name: profileName,
+          folderId: folderId || '',
+          platform,
+          os,
+          browser: browserLabel,
+          notes: '',
+          tags,
+          proxy: proxyConfig,
+          runtime: 'browser',
+          fingerprint,
+        });
+      }
     }
 
     createBulkProfiles(inputs);
@@ -202,6 +271,12 @@ export const CreateProfileModal: React.FC = () => {
   const handleClose = () => {
     setName('');
     setQuantity(1);
+    setRuntime('browser');
+    setIsAndroidTooltipOpen(false);
+    if (tooltipTimeoutRef.current) {
+      clearTimeout(tooltipTimeoutRef.current);
+      tooltipTimeoutRef.current = null;
+    }
     setSelectedProxyId('manual');
     setProxyFullString('');
     setProxyHost('');
@@ -257,7 +332,8 @@ export const CreateProfileModal: React.FC = () => {
     );
 
   return (
-    <Modal
+    <>
+      <Modal
       isOpen={isCreateModalOpen}
       onClose={handleClose}
       title={t.createModal.title}
@@ -279,6 +355,98 @@ export const CreateProfileModal: React.FC = () => {
       }
     >
       <form onSubmit={handleSubmit} className="space-y-4">
+        {/* Runtime Engine Tabs: Navegador vs Android */}
+        <div className="flex items-center justify-between pb-3 border-b border-[var(--border)]">
+          <div className="flex items-center p-0.5 bg-[var(--muted-bg)] rounded-lg border border-[var(--border)] gap-0.5">
+            <button
+              type="button"
+              onClick={() => setRuntime('browser')}
+              className={clsx(
+                'flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-all cursor-pointer',
+                runtime === 'browser'
+                  ? 'bg-[var(--card)] text-[var(--foreground)] shadow-xs border border-[var(--border)]'
+                  : 'text-[var(--muted)] hover:text-[var(--foreground)]'
+              )}
+            >
+              <i className="ri-global-line text-sm text-red-500" />
+              <span>Navegador</span>
+            </button>
+
+            <div
+              className="relative"
+              onMouseEnter={handleMouseEnterAndroid}
+              onMouseLeave={handleMouseLeaveAndroid}
+            >
+              <button
+                type="button"
+                onClick={() => {
+                  if (isAndroidReady) {
+                    setRuntime('android');
+                  } else {
+                    setIsAndroidTooltipOpen(false);
+                    setIsAndroidSetupModalOpen(true);
+                  }
+                }}
+                className={clsx(
+                  'flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-all cursor-pointer',
+                  !isAndroidReady
+                    ? 'opacity-65 text-[var(--muted)] hover:text-[var(--foreground)]'
+                    : 'cursor-pointer',
+                  runtime === 'android'
+                    ? 'bg-[var(--card)] text-[var(--foreground)] shadow-xs border border-[var(--border)]'
+                    : 'text-[var(--muted)] hover:text-[var(--foreground)]'
+                )}
+                title={!isAndroidReady ? 'Requer dependências do Android. Clique para configurar.' : undefined}
+              >
+                <i className="ri-android-fill text-sm text-emerald-500" />
+                <span>Android</span>
+                {!isAndroidReady && (
+                  <i className="ri-lock-line text-[11px] text-amber-500/80 ml-0.5" />
+                )}
+              </button>
+
+              {/* Tooltip on hover when disabled */}
+              {!isAndroidReady && isAndroidTooltipOpen && (
+                <div
+                  className="absolute left-1/2 -translate-x-1/2 top-full pt-1.5 z-50 flex flex-col items-center pointer-events-auto animate-in fade-in duration-150"
+                  onMouseEnter={handleMouseEnterAndroid}
+                  onMouseLeave={handleMouseLeaveAndroid}
+                >
+                  <div className="w-2.5 h-2.5 bg-[var(--card)] border-t border-l border-[var(--border)] rotate-45 -mb-1.5 z-10 shadow-xs" />
+                  <div className="w-56 p-2.5 bg-[var(--card)] border border-[var(--border)] rounded-xl shadow-xl text-center space-y-1.5">
+                    <p className="text-[11px] text-[var(--foreground)] font-medium leading-tight">
+                      Requer dependências do emulador Android instaladas.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setIsAndroidTooltipOpen(false);
+                        setIsAndroidSetupModalOpen(true);
+                      }}
+                      className="text-[11px] text-red-500 hover:text-red-600 hover:underline font-semibold cursor-pointer block w-full py-0.5 transition-colors"
+                    >
+                      Clique aqui para instalar
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Discrete requirements button */}
+          <button
+            type="button"
+            onClick={() => setIsAndroidSetupModalOpen(true)}
+            className="text-[11px] text-[var(--muted)] hover:text-[var(--foreground)] flex items-center gap-1.5 transition-colors cursor-pointer"
+            title="Diagnóstico e Dependências do Android"
+          >
+            <i className={clsx(isAndroidReady ? 'ri-checkbox-circle-fill text-emerald-500' : 'ri-tools-line text-amber-500')} />
+            <span>{isAndroidReady ? 'Android Ativo' : 'Instalar Requisitos'}</span>
+          </button>
+        </div>
+
         {/* Profile Name & Quantity */}
         <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
           <div className="sm:col-span-8">
@@ -390,29 +558,68 @@ export const CreateProfileModal: React.FC = () => {
           </div>
         </div>
 
-        {/* OS */}
-        <div className="space-y-1.5">
-          <label className="text-xs font-medium text-[var(--muted-fg)] select-none">
-            {t.createModal.os}
-          </label>
-          <div className="flex items-center gap-2">
-            {[
-              { id: 'mac', label: 'macOS', icon: 'ri-apple-fill' },
-              { id: 'windows', label: 'Windows', icon: 'ri-windows-fill' },
-              { id: 'linux', label: 'Linux', icon: 'ri-ubuntu-fill' },
-            ].map(osOption => (
-              <button
-                key={osOption.id}
-                type="button"
-                onClick={() => setOs(osOption.id as any)}
-                className={clsx(toggleBtn(os === osOption.id), 'flex-1')}
-              >
-                <i className={osOption.icon} />
-                <span>{osOption.label}</span>
-              </button>
-            ))}
+        {/* OS or Android Hardware Card */}
+        {runtime === 'browser' ? (
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-[var(--muted-fg)] select-none">
+              {t.createModal.os}
+            </label>
+            <div className="flex items-center gap-2">
+              {[
+                { id: 'mac', label: 'macOS', icon: 'ri-apple-fill' },
+                { id: 'windows', label: 'Windows', icon: 'ri-windows-fill' },
+                { id: 'linux', label: 'Linux', icon: 'ri-ubuntu-fill' },
+              ].map(osOption => (
+                <button
+                  key={osOption.id}
+                  type="button"
+                  onClick={() => setOs(osOption.id as any)}
+                  className={clsx(toggleBtn(os === osOption.id), 'flex-1')}
+                >
+                  <i className={osOption.icon} />
+                  <span>{osOption.label}</span>
+                </button>
+              ))}
+            </div>
           </div>
-        </div>
+        ) : (
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-medium text-[var(--muted-fg)] select-none">
+                Aparelho Android Real (Fingerprint)
+              </label>
+              <button
+                type="button"
+                onClick={() => setSelectedAndroidDevice(DeviceCatalogService.getRandom(undefined, '12'))}
+                className="text-[11px] text-red-500 hover:text-red-400 font-medium flex items-center gap-1 cursor-pointer"
+                title="Sortear outro modelo de smartphone real"
+              >
+                <i className="ri-refresh-line" />
+                <span>Sortear Outro</span>
+              </button>
+            </div>
+            <div className="p-3 bg-[var(--muted-bg)]/60 rounded-xl border border-[var(--border)] flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="w-8 h-8 rounded-lg bg-[var(--card)] border border-[var(--border)] flex items-center justify-center text-emerald-500 text-base flex-shrink-0">
+                  <i className="ri-smartphone-line" />
+                </div>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-semibold text-xs text-[var(--foreground)] truncate">
+                      {selectedAndroidDevice.brand} {selectedAndroidDevice.name}
+                    </span>
+                    <span className="text-[9.5px] font-mono px-1.5 py-0.2 rounded bg-[var(--card)] text-[var(--muted-fg)] border border-[var(--border)]">
+                      Android {selectedAndroidDevice.androidVersion}
+                    </span>
+                  </div>
+                  <span className="text-[10.5px] font-mono text-[var(--muted)] truncate block mt-0.5">
+                    {selectedAndroidDevice.model} · {selectedAndroidDevice.resolution} · {selectedAndroidDevice.dpi}dpi
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Proxy Setup */}
         <div className="space-y-2.5">
@@ -563,5 +770,12 @@ export const CreateProfileModal: React.FC = () => {
         </div>
       </form>
     </Modal>
+
+    <AndroidSetupModal
+      isOpen={isAndroidSetupModalOpen}
+      onClose={() => setIsAndroidSetupModalOpen(false)}
+      onStatusChanged={(allOk) => setIsAndroidReady(allOk)}
+    />
+  </>
   );
 };

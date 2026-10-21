@@ -119,6 +119,39 @@ const geenjutsuApi = {
       ipcRenderer.removeListener('app:request-close', handler);
     };
   },
+
+  // Android Mode Operations
+  checkAndroidDependencies: () => ipcRenderer.invoke('android:check-dependencies'),
+  installAndroidDependency: (id: string) => ipcRenderer.invoke('android:install-dependency', id),
+  openAndroidScreen: (profileId: string) => ipcRenderer.invoke('android:open-screen', profileId),
+  openAppInStore: (profileId: string, packageName?: string) =>
+    ipcRenderer.invoke('android:open-app-store', { profileId, packageName }),
+  installAndroidPackage: (profileId: string) => ipcRenderer.invoke('android:install-package', profileId),
+  downloadAndInstallAndroidApp: (data: { profileId: string; downloadUrl: string; appName: string }) =>
+    ipcRenderer.invoke('android:download-and-install-package', data),
+  onAndroidInstallProgress: (callback: (data: {
+    profileId: string;
+    appName: string;
+    stage: 'downloading' | 'installing' | 'completed' | 'error';
+    progress?: number;
+    received?: number;
+    total?: number;
+    error?: string;
+    message?: string;
+  }) => void) => {
+    const handler = (_: any, data: any) => callback(data);
+    ipcRenderer.on('android:install-progress', handler);
+    return () => {
+      ipcRenderer.removeListener('android:install-progress', handler);
+    };
+  },
+  onAndroidInstallLog: (callback: (data: string) => void) => {
+    const handler = (_: any, data: string) => callback(data);
+    ipcRenderer.on('android:install-log', handler);
+    return () => {
+      ipcRenderer.removeListener('android:install-log', handler);
+    };
+  },
 };
 
 

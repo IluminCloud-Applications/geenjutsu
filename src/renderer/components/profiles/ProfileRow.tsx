@@ -12,6 +12,7 @@ import { ProfileTagCell } from './ProfileTagCell';
 import { ExportProfileModal } from './ExportProfileModal';
 import { ImportCookiesModal } from './ImportCookiesModal';
 import { WarmupModal } from './WarmupModal';
+import { InstallApkModal } from './InstallApkModal';
 import { formatCreatedDate, formatLastOpenedDate } from '../../utils/dateFormatter';
 
 interface ProfileRowProps {
@@ -48,6 +49,7 @@ export const ProfileRow: React.FC<ProfileRowProps> = ({ profile }) => {
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [isImportCookiesModalOpen, setIsImportCookiesModalOpen] = useState(false);
   const [isWarmupModalOpen, setIsWarmupModalOpen] = useState(false);
+  const [isInstallApkModalOpen, setIsInstallApkModalOpen] = useState(false);
   
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
 
@@ -80,6 +82,13 @@ export const ProfileRow: React.FC<ProfileRowProps> = ({ profile }) => {
   };
 
   const renderOsBadges = () => {
+    if (profile.runtime === 'android' || profile.os === 'android') {
+      return (
+        <div className="flex items-center gap-1 text-emerald-500">
+          <i className="ri-android-fill text-[11px]" title="Android" />
+        </div>
+      );
+    }
     const isApple   = profile.os === 'mac';
     const isWindows = profile.os === 'windows' || profile.browser.includes('Windows');
     const isLinux   = profile.os === 'linux';
@@ -161,10 +170,59 @@ export const ProfileRow: React.FC<ProfileRowProps> = ({ profile }) => {
     });
   };
 
+  const isAndroid = profile.runtime === 'android';
+
   const menuItems: DropdownItem[] = profile.isTrash
     ? [
         { label: t.actions.restore, icon: 'ri-restart-line', onClick: () => restoreFromTrash(profile.id) },
         { label: t.actions.permanentDelete, icon: 'ri-delete-bin-7-line', onClick: () => setConfirmDelete(true), danger: true, divider: true },
+      ]
+    : isAndroid
+    ? [
+        {
+          label: profile.isPinned ? t.actions.unpin : t.actions.pin,
+          icon: profile.isPinned ? 'ri-unpin-line' : 'ri-pushpin-line',
+          onClick: () => togglePinProfile(profile.id),
+        },
+        { label: t.actions.edit, icon: 'ri-edit-line', onClick: () => setEditingProfile(profile) },
+        ...((isRunning || isLaunching)
+          ? [
+              {
+                label: 'Forçar Parada',
+                icon: 'ri-stop-circle-line text-red-500',
+                onClick: () => toggleLaunchProfile(profile.id),
+              },
+            ]
+          : []),
+        ...(isRunning && isAndroid
+          ? [
+              {
+                label: 'Abrir Tela (scrcpy)',
+                icon: 'ri-mac-line text-emerald-500',
+                onClick: () => window.geenjutsuApi?.openAndroidScreen?.(profile.id),
+              },
+              {
+                label: 'Instalar Aplicativos (APK)',
+                icon: 'ri-download-cloud-2-line text-blue-500',
+                onClick: () => setIsInstallApkModalOpen(true),
+              },
+            ]
+          : isRunning
+          ? [
+              {
+                label: 'Abrir Tela (scrcpy)',
+                icon: 'ri-mac-line text-emerald-500',
+                onClick: () => window.geenjutsuApi?.openAndroidScreen?.(profile.id),
+              },
+            ]
+          : []),
+        {
+          label: t.actions.testProxy,
+          icon: 'ri-radar-line',
+          onClick: handleTestProxy,
+        },
+        { label: t.actions.export, icon: 'ri-download-2-line', onClick: () => setIsExportModalOpen(true) },
+        { label: t.actions.trash, icon: 'ri-delete-bin-line', onClick: () => setConfirmTrash(true), danger: true, divider: true },
       ]
     : [
         {
@@ -173,6 +231,15 @@ export const ProfileRow: React.FC<ProfileRowProps> = ({ profile }) => {
           onClick: () => togglePinProfile(profile.id),
         },
         { label: t.actions.edit, icon: 'ri-edit-line', onClick: () => setEditingProfile(profile) },
+        ...((isRunning || isLaunching)
+          ? [
+              {
+                label: 'Forçar Parada',
+                icon: 'ri-stop-circle-line text-red-500',
+                onClick: () => toggleLaunchProfile(profile.id),
+              },
+            ]
+          : []),
         {
           label: isWarming ? (t.actions.warming || 'Aquecendo...') : (t.actions.warmup || 'Aquecer'),
           icon: isWarming ? 'ri-fire-fill text-amber-500' : 'ri-fire-line',
@@ -396,15 +463,41 @@ export const ProfileRow: React.FC<ProfileRowProps> = ({ profile }) => {
                 {t.actions.launching || 'Abrindo...'}
               </Button>
             ) : (
-              <Button
-                variant={isRunning ? 'stop' : 'launch'}
-                size="sm"
-                icon={isRunning ? 'ri-stop-fill' : 'ri-play-fill'}
-                onClick={() => toggleLaunchProfile(profile.id)}
-                className="min-w-[76px]"
-              >
-                {isRunning ? t.actions.stop : t.actions.start}
-              </Button>
+              <>
+                {isRunning && isAndroid && (
+                  <>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      icon="ri-download-cloud-2-line text-blue-500"
+                      onClick={() => setIsInstallApkModalOpen(true)}
+                      title="Instalar Aplicativos (APK / XAPK)"
+                      className="px-2 font-medium"
+                    >
+                      APK
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      icon="ri-mac-line text-emerald-500"
+                      onClick={() => window.geenjutsuApi?.openAndroidScreen?.(profile.id)}
+                      title="Abrir Tela (scrcpy)"
+                      className="px-2.5 font-medium"
+                    >
+                      Tela
+                    </Button>
+                  </>
+                )}
+                <Button
+                  variant={isRunning ? 'stop' : 'launch'}
+                  size="sm"
+                  icon={isRunning ? 'ri-stop-fill' : 'ri-play-fill'}
+                  onClick={() => toggleLaunchProfile(profile.id)}
+                  className="min-w-[76px]"
+                >
+                  {isRunning ? t.actions.stop : t.actions.start}
+                </Button>
+              </>
             )}
 
             <Dropdown
@@ -471,6 +564,14 @@ export const ProfileRow: React.FC<ProfileRowProps> = ({ profile }) => {
         <WarmupModal
           isOpen={isWarmupModalOpen}
           onClose={() => setIsWarmupModalOpen(false)}
+          profile={profile}
+        />
+      )}
+
+      {isInstallApkModalOpen && (
+        <InstallApkModal
+          isOpen={isInstallApkModalOpen}
+          onClose={() => setIsInstallApkModalOpen(false)}
           profile={profile}
         />
       )}

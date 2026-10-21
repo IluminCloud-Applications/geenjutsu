@@ -48,6 +48,10 @@ export class DataStore {
               p.updatedAt = realTs;
             }
           }
+          // Status persistido no disco nunca deve ser 'launching' ou 'running'
+          if (p.status === 'launching' || p.status === 'running') {
+            p.status = 'idle';
+          }
           return p;
         });
       }
@@ -78,6 +82,12 @@ export class DataStore {
       ...data,
       updatedAt: Date.now(),
     };
+
+    if (Array.isArray(updated.profiles)) {
+      updated.profiles = updated.profiles.map(p => (
+        p.status === 'launching' || p.status === 'running' ? { ...p, status: 'idle' } : p
+      ));
+    }
 
     const filePath = this.getFilePath();
     try {

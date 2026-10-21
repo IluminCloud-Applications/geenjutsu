@@ -87,6 +87,9 @@ export const TitleBar: React.FC<TitleBarProps> = ({ isLockScreen = false }) => {
     if (selectedFolderId === 'running') {
       return { id: 'running', name: t.folders.runningProfiles, icon: 'ri-play-circle-line' };
     }
+    if (selectedFolderId === 'android') {
+      return { id: 'android', name: 'Android', icon: 'ri-android-line' };
+    }
     if (selectedFolderId === 'trash') {
       return { id: 'trash', name: t.folders.trashBin, icon: 'ri-delete-bin-line' };
     }

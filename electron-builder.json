@@ -16,7 +16,9 @@
   "asar": true,
   "asarUnpack": [
     "**/*.node",
-    "dist-electron/camoufoxWorker.mjs"
+    "dist-electron/camoufoxWorker.mjs",
+    "public/bin/**/*",
+    "public/*.apk"
   ],
   "win": {
     "target": [

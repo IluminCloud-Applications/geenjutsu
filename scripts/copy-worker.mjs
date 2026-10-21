@@ -11,3 +11,11 @@ if (!fs.existsSync(targetDir)) {
 
 fs.copyFileSync(sourceFile, targetFile);
 console.log('Worker copied successfully to dist-electron/camoufoxWorker.mjs');
+
+const binSrc = path.resolve('public/bin');
+const binDest = path.resolve('dist-electron/bin');
+if (fs.existsSync(binSrc)) {
+  fs.mkdirSync(binDest, { recursive: true });
+  fs.cpSync(binSrc, binDest, { recursive: true });
+  console.log('Binaries copied successfully to dist-electron/bin');
+}

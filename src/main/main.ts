@@ -1,8 +1,10 @@
-import { app, BrowserWindow, Menu, session, shell, ipcMain, nativeImage, NativeImage, Tray } from 'electron';
+import { app, BrowserWindow, Menu, session, shell, ipcMain, nativeImage, NativeImage, Tray, dialog } from 'electron';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { CamoufoxManager, ProfileProxyConfig } from './services/camoufoxManager';
+import { RedroidManager } from './services/redroidManager';
+import { DependencyService } from './services/dependencyService';
 import { DataStore } from './services/dataStore';
 import { WarmupEngine } from './services/warmupEngine';
 import { WarmupScheduler } from './services/warmupScheduler';
@@ -13,6 +15,14 @@ import { ProxyChecker } from './services/proxyChecker';
 process.env.NODE_NO_WARNINGS = '1';
 app.commandLine.appendSwitch('log-level', '3');
 app.commandLine.appendSwitch('disable-logging');
+
+// Evita que resets normais de conexões TCP de proxy (ECONNRESET/EPIPE) abram pop-ups de erro no Electron
+process.on('uncaughtException', (err: any) => {
+  if (err?.code === 'ECONNRESET' || err?.code === 'EPIPE' || err?.code === 'ETIMEDOUT') {
+    return;
+  }
+  console.error('[Main] Uncaught Exception:', err);
+});
 
 app.setName('Geenjutsu');
 if (process.platform === 'win32') {
@@ -106,11 +116,24 @@ function showMainWindow(): void {
 }
 
 async function quitApplication(): Promise<void> {
+  if (isQuitting) return;
   isQuitting = true;
   WarmupScheduler.stop();
+
   try {
+    console.log('[Main] Encerrando navegadores Camoufox...');
     await CamoufoxManager.closeAllBrowsers();
-  } catch {}
+  } catch (err) {
+    console.warn('[Main] Erro ao fechar navegadores:', err);
+  }
+
+  try {
+    console.log('[Main] Encerrando emuladores Android (containers Redroid, scrcpy e ADB)...');
+    await RedroidManager.closeAll();
+  } catch (err) {
+    console.warn('[Main] Erro ao fechar emuladores Android:', err);
+  }
+
   if (tray && !tray.isDestroyed()) {
     try {
       tray.destroy();
@@ -316,9 +339,21 @@ app.whenReady().then(() => {
     callback({ cancel: false, responseHeaders });
   });
 
-  // Setup CamoufoxManager event broadcasting to renderer
-  CamoufoxManager.on('status_changed', (payload) => {
-    mainWindow?.webContents.send('profile:status-changed', payload);
+  // Setup CamoufoxManager & RedroidManager event broadcasting to renderer
+  const broadcastProfileStatus = (payload: any) => {
+    const windows = BrowserWindow.getAllWindows();
+    for (const win of windows) {
+      if (!win.isDestroyed()) {
+        win.webContents.send('profile:status-changed', payload);
+      }
+    }
+  };
+
+  CamoufoxManager.on('status_changed', broadcastProfileStatus);
+  RedroidManager.on('status_changed', broadcastProfileStatus);
+
+  DependencyService.on('log', (log) => {
+    mainWindow?.webContents.send('android:install-log', log);
   });
 
   CamoufoxManager.on('cookies_updated', (payload) => {
@@ -421,11 +456,23 @@ app.whenReady().then(() => {
     return app.getVersion();
   });
 
-  // Browser Profile Operations IPC
+  // Profile Operations IPC (Camoufox Browser & Redroid Android)
   ipcMain.handle('profiles:launch', async (_, profileData: any) => {
     try {
       if (!profileData || !profileData.id) {
         return { success: false, error: 'ID do perfil não informado' };
+      }
+
+      // Check if this is an Android Emulator profile
+      if (profileData.runtime === 'android') {
+        console.log(`[Main] Solicitando lançamento do perfil Android: "${profileData.name}" (ID: ${profileData.id})`);
+        const result = await RedroidManager.launchProfile(profileData);
+        if (!result.success) {
+          console.error(`[Main] Erro ao iniciar perfil Android "${profileData.name}":`, result.error);
+        } else {
+          console.log(`[Main] Perfil Android "${profileData.name}" lançado com sucesso na porta ADB: ${result.adbPort}`);
+        }
+        return result;
       }
 
       if (WarmupEngine.getStatus(profileData.id)?.isRunning) {
@@ -464,6 +511,11 @@ app.whenReady().then(() => {
   ipcMain.handle('profiles:stop', async (_, profileId: string) => {
     try {
       if (!profileId) return { success: false };
+
+      if (RedroidManager.isInstanceRunning(profileId)) {
+        return await RedroidManager.stopProfile(profileId);
+      }
+
       await CamoufoxManager.closeBrowser(profileId);
       return { success: true };
     } catch (err: any) {
@@ -471,8 +523,75 @@ app.whenReady().then(() => {
     }
   });
 
-  ipcMain.handle('profiles:get-running', () => {
-    return CamoufoxManager.getRunningProfileIds();
+  ipcMain.handle('profiles:get-running', async () => {
+    const browserIds = CamoufoxManager.getRunningProfileIds();
+    const androidIds = await RedroidManager.getRunningProfileIds();
+    return Array.from(new Set([...browserIds, ...androidIds]));
+  });
+
+  // Android Specific IPC
+  ipcMain.handle('android:check-dependencies', async () => {
+    return await DependencyService.checkAll();
+  });
+
+  ipcMain.handle('android:install-dependency', async (_, id: any) => {
+    return await DependencyService.runAction(id);
+  });
+
+  ipcMain.handle('android:open-screen', async (_, profileId: string) => {
+    const data = DataStore.read();
+    const target = (data.profiles || []).find((p: any) => p.id === profileId);
+    if (!target) {
+      return { success: false, error: 'Perfil não encontrado' };
+    }
+    return await RedroidManager.openScreen(target);
+  });
+
+  ipcMain.handle('android:install-package', async (_, profileId: string) => {
+    try {
+      if (!mainWindow) {
+        return { success: false, error: 'Janela principal não disponível' };
+      }
+      const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+        title: 'Selecione o arquivo APK ou XAPK para instalar',
+        buttonLabel: 'Instalar no Android',
+        filters: [
+          { name: 'Pacotes Android (*.apk, *.xapk)', extensions: ['apk', 'xapk'] },
+          { name: 'Todos os arquivos', extensions: ['*'] },
+        ],
+        properties: ['openFile'],
+      });
+
+      if (canceled || !filePaths || filePaths.length === 0) {
+        return { success: false, canceled: true };
+      }
+
+      return await RedroidManager.installAppPackage(profileId, filePaths[0]);
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Erro ao selecionar ou instalar aplicativo' };
+    }
+  });
+
+  ipcMain.handle('android:download-and-install-package', async (_, { profileId, downloadUrl, appName }: { profileId: string; downloadUrl: string; appName: string }) => {
+    try {
+      return await RedroidManager.downloadAndInstallApp(profileId, downloadUrl, appName, (progressData) => {
+        mainWindow?.webContents.send('android:install-progress', {
+          profileId,
+          appName,
+          ...progressData,
+        });
+      });
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Erro durante download ou instalação' };
+    }
+  });
+
+  ipcMain.handle('android:open-app-store', async (_, { profileId, packageName }: { profileId: string; packageName?: string }) => {
+    try {
+      return await RedroidManager.openAppInStore(profileId, packageName);
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Erro ao abrir Aurora Store' };
+    }
   });
 
   ipcMain.handle('profiles:inject-cookies', async (_, { profileId, cookies }: { profileId: string; cookies: any[] }) => {
@@ -625,15 +744,10 @@ app.whenReady().then(() => {
   });
 });
 
-app.on('before-quit', () => {
-  isQuitting = true;
-  WarmupScheduler.stop();
-  CamoufoxManager.closeAllBrowsers().catch(() => {});
-  if (tray && !tray.isDestroyed()) {
-    try {
-      tray.destroy();
-      tray = null;
-    } catch {}
+app.on('before-quit', (event) => {
+  if (!isQuitting) {
+    event.preventDefault();
+    quitApplication();
   }
 });
 

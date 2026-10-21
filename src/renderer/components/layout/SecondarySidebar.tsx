@@ -140,6 +140,26 @@ export const SecondarySidebar: React.FC = () => {
           <span className={badgeClass(selectedFolderId === 'running')}>{counts.running}</span>
         </button>
 
+        {counts.android > 0 && (
+          <button
+            type="button"
+            onClick={() => setSelectedFolderId('android')}
+            className={navItemClass(selectedFolderId === 'android')}
+          >
+            <div className="flex items-center gap-2.5 truncate">
+              <i
+                className={clsx(
+                  iconClass(selectedFolderId === 'android'),
+                  'ri-android-line',
+                  selectedFolderId === 'android' && 'text-emerald-500'
+                )}
+              />
+              <span className="truncate">Android</span>
+            </div>
+            <span className={badgeClass(selectedFolderId === 'android')}>{counts.android}</span>
+          </button>
+        )}
+
         <button
           type="button"
           onClick={() => setSelectedFolderId('trash')}

@@ -45,5 +45,22 @@ interface Window {
     onAutomationStateChange: (callback: (data: any) => void) => () => void;
     onAutomationLog: (callback: (data: any) => void) => () => void;
     onAutomationFinished: (callback: (data: any) => void) => () => void;
+    checkAndroidDependencies?: () => Promise<import('../types').SystemDiagnosticResult>;
+    installAndroidDependency?: (id: string) => Promise<{ success: boolean; log: string }>;
+    openAndroidScreen?: (profileId: string) => Promise<{ success: boolean; error?: string }>;
+    openAppInStore?: (profileId: string, packageName?: string) => Promise<{ success: boolean; error?: string }>;
+    installAndroidPackage?: (profileId: string) => Promise<{ success: boolean; error?: string; message?: string; canceled?: boolean }>;
+    downloadAndInstallAndroidApp?: (data: { profileId: string; downloadUrl: string; appName: string }) => Promise<{ success: boolean; error?: string; message?: string }>;
+    onAndroidInstallProgress?: (callback: (data: {
+      profileId: string;
+      appName: string;
+      stage: 'downloading' | 'installing' | 'completed' | 'error';
+      progress?: number;
+      received?: number;
+      total?: number;
+      error?: string;
+      message?: string;
+    }) => void) => () => void;
+    onAndroidInstallLog?: (callback: (data: string) => void) => () => void;
   };
 }

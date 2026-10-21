@@ -1,3 +1,5 @@
+import { AndroidDeviceSpec } from './catalog';
+
 export interface ProxyConfig {
   type: 'direct' | 'http' | 'socks5';
   name?: string;
@@ -59,7 +61,7 @@ export interface Profile {
   name: string;
   folderId: string;
   platform: 'facebook' | 'chrome' | 'tiktok' | 'google' | 'amazon' | 'general';
-  os: 'mac' | 'windows' | 'linux';
+  os: 'mac' | 'windows' | 'linux' | 'android';
   browser: string;
   notes: string;
   proxy?: ProxyConfig;
@@ -79,6 +81,17 @@ export interface Profile {
   lastWarmupAt?: number;
   nextWarmupAt?: number;
   totalWarmupSites?: number;
+
+  // Android Mode
+  runtime?: 'browser' | 'android';
+  device?: AndroidDeviceSpec;
+  androidVersion?: string;
+  adbPort?: number;
+  width?: number;
+  height?: number;
+  dpi?: number;
+  androidId?: string;
+  macAddress?: string;
 }
 
 export type ProfileCreateInput = Omit<Profile, 'id' | 'createdAt' | 'updatedAt' | 'status' | 'isTrash' | 'isPinned' | 'pinnedAt'>;

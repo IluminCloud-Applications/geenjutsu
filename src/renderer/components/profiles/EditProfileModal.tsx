@@ -205,9 +205,10 @@ export const EditProfileModal: React.FC = () => {
         : undefined;
 
     let finalFingerprint = editingProfile.fingerprint;
-    if (!finalFingerprint) {
-      finalFingerprint = generateProfileFingerprint(editingProfile.os || 'windows', proxyConfig);
-    } else if (proxyConfig && (proxyConfig.host || proxyConfig.ipDisplay)) {
+    if (!finalFingerprint && editingProfile.runtime !== 'android' && editingProfile.os !== 'android') {
+      const osTarget = (editingProfile.os === 'mac' || editingProfile.os === 'linux') ? editingProfile.os : 'windows';
+      finalFingerprint = generateProfileFingerprint(osTarget, proxyConfig);
+    } else if (finalFingerprint && proxyConfig && (proxyConfig.host || proxyConfig.ipDisplay)) {
       const host = proxyConfig.host || (proxyConfig.ipDisplay ? proxyConfig.ipDisplay.split(':')[0] : '');
       const detectedCountry = proxyConfig.countryCode || detectCountryFromHost(host).countryCode;
       const geoInfo = getTimezoneAndLanguageForCountry(detectedCountry);
@@ -216,7 +217,7 @@ export const EditProfileModal: React.FC = () => {
         timezone: geoInfo.timezone,
         language: geoInfo.language,
       };
-    } else if (!proxyConfig) {
+    } else if (!proxyConfig && finalFingerprint) {
       const local = getUserLocalTimezoneAndLanguage();
       finalFingerprint = {
         ...finalFingerprint,

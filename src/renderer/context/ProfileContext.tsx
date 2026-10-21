@@ -602,7 +602,10 @@ export const ProfileProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const [profiles, setProfiles] = useState<Profile[]>(() => {
     const saved = localStorage.getItem('geenjutsu_profiles');
     const list = saved ? JSON.parse(saved) : INITIAL_PROFILES;
-    return repairProfileTimestamps(list);
+    return repairProfileTimestamps(list).map(p => ({
+      ...p,
+      status: 'idle',
+    }));
   });
 
   const [proxies, setProxies] = useState<ProxyItem[]>(() => {
@@ -621,7 +624,11 @@ export const ProfileProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
     window.geenjutsuApi.getProfiles().then((diskProfiles) => {
       if (Array.isArray(diskProfiles) && diskProfiles.length > 0) {
-        setProfiles(repairProfileTimestamps(diskProfiles));
+        const repaired = repairProfileTimestamps(diskProfiles).map(p => ({
+          ...p,
+          status: 'idle' as const,
+        }));
+        setProfiles(repaired);
         completeOnboarding();
       }
     });
@@ -641,11 +648,13 @@ export const ProfileProvider: React.FC<{ children: React.ReactNode }> = ({ child
       }
     });
     window.geenjutsuApi.getRunningProfiles().then((runningIds) => {
-      if (Array.isArray(runningIds) && runningIds.length > 0) {
-        setProfiles((prev) =>
-          prev.map((p) => (runningIds.includes(p.id) ? { ...p, status: 'running' } : p))
-        );
-      }
+      const runningSet = new Set(Array.isArray(runningIds) ? runningIds : []);
+      setProfiles((prev) =>
+        prev.map((p) => ({
+          ...p,
+          status: runningSet.has(p.id) ? 'running' : 'idle',
+        }))
+      );
     });
 
     // Listen to profile status changes (e.g. user closed browser)
@@ -752,10 +761,33 @@ export const ProfileProvider: React.FC<{ children: React.ReactNode }> = ({ child
   }, []);
 
 
-  // Save to localStorage & DataStore
+  // Save to localStorage & DataStore (sempre persiste status como 'idle' para evitar carregar 'launching' ou 'running' após fechar o app)
   useEffect(() => {
-    localStorage.setItem('geenjutsu_profiles', JSON.stringify(profiles));
-    window.geenjutsuApi?.saveProfiles?.(profiles);
+    const sanitized = profiles.map(p => (p.status !== 'idle' ? { ...p, status: 'idle' } : p));
+    localStorage.setItem('geenjutsu_profiles', JSON.stringify(sanitized));
+    window.geenjutsuApi?.saveProfiles?.(sanitized);
+  }, [profiles]);
+
+  // Watchdog de segurança para recuperar perfis presos em 'launching'
+  useEffect(() => {
+    const hasLaunching = profiles.some(p => p.status === 'launching');
+    if (!hasLaunching) return;
+
+    const timer = setTimeout(() => {
+      window.geenjutsuApi?.getRunningProfiles?.().then((runningIds) => {
+        const runningSet = new Set(Array.isArray(runningIds) ? runningIds : []);
+        setProfiles((prev) =>
+          prev.map((p) => {
+            if (p.status === 'launching') {
+              return { ...p, status: runningSet.has(p.id) ? 'running' : 'idle' };
+            }
+            return p;
+          })
+        );
+      });
+    }, 20000);
+
+    return () => clearTimeout(timer);
   }, [profiles]);
 
   useEffect(() => {
@@ -1163,18 +1195,23 @@ export const ProfileProvider: React.FC<{ children: React.ReactNode }> = ({ child
         try {
           const res = await window.geenjutsuApi.launchProfile(target);
           if (res && !res.success) {
-            console.error('[Geenjutsu] Erro ao abrir navegador:', res.error);
+            console.error('[Geenjutsu] Erro ao abrir perfil:', res.error);
+            alert(`Não foi possível iniciar o perfil "${target.name}":\n\n${res.error || 'Erro desconhecido'}`);
             setProfiles(prev =>
               prev.map(p => (p.id === id ? { ...p, status: 'idle' } : p))
             );
             return;
           }
           setProfiles(prev =>
-            prev.map(p =>
-              p.id === id
-                ? { ...p, status: 'running', lastLaunchedAt: Date.now() }
-                : p
-            )
+            prev.map(p => {
+              if (p.id !== id) return p;
+              const resolvedStatus = p.status === 'running' ? 'running' : (target.runtime === 'android' ? 'launching' : 'running');
+              return {
+                ...p,
+                status: resolvedStatus,
+                lastLaunchedAt: Date.now(),
+              };
+            })
           );
         } catch (err) {
           console.error('[Geenjutsu] Erro ao lançar perfil:', err);
@@ -1339,6 +1376,7 @@ export const ProfileProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const counts = {
     all: profiles.filter(p => !p.isTrash).length,
     running: profiles.filter(p => !p.isTrash && p.status === 'running').length,
+    android: profiles.filter(p => !p.isTrash && p.runtime === 'android').length,
     trash: profiles.filter(p => p.isTrash).length,
     unassigned: profiles.filter(
       p => !p.isTrash && (!p.folderId || p.folderId === 'unassigned' || p.folderId === 'none' || !folders.some(f => f.id === p.folderId))
@@ -1360,6 +1398,11 @@ export const ProfileProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
         // Running filter
         if (selectedFolderId === 'running' && p.status !== 'running') {
+          return false;
+        }
+
+        // Android runtime filter
+        if (selectedFolderId === 'android' && p.runtime !== 'android') {
           return false;
         }
 

@@ -1,4 +1,6 @@
 export * from './profile';
+export * from './catalog';
+export * from './dependency';
 export * from './folder';
 export * from './proxy';
 export * from './referral';
