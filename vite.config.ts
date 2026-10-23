@@ -5,6 +5,9 @@ import electron from 'vite-plugin-electron/simple';
 import path from 'path';
 
 export default defineConfig({
+  server: {
+    port: 5188,
+  },
   plugins: [
     tailwindcss(),
     react(),

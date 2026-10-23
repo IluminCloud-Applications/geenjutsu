@@ -36,6 +36,7 @@ export interface OpenBrowserOptions {
   cookies?: any[];
   fingerprint?: ProfileFingerprintConfig;
   headless?: boolean;
+  economyMode?: boolean;
 }
 
 type EventCallback = (data: any) => void;
@@ -313,6 +314,7 @@ export class CamoufoxManager {
       cookies: providedCookies,
       fingerprint,
       headless = false,
+      economyMode = false,
     } = options;
 
     // 1. If already open, bring to front or navigate
@@ -356,6 +358,7 @@ export class CamoufoxManager {
       cookies: cookiesToInject,
       fingerprint,
       headless,
+      economyMode,
     };
 
     const nodeBin = this.resolveNodeBinary();
@@ -366,6 +369,7 @@ export class CamoufoxManager {
       workerScript,
       osTarget,
       hasProxy: Boolean(proxy),
+      economyMode,
     });
 
     return new Promise<{ success: boolean; error?: string }>((resolve) => {
@@ -377,14 +381,14 @@ export class CamoufoxManager {
       });
 
       this.activeWorkers.set(profileId, child);
-      this.emit('status_changed', { profileId, status: 'launching' });
+      this.emit('status_changed', { profileId, status: 'launching', economyMode });
 
       child.on('message', (msg: any) => {
         if (!msg || typeof msg !== 'object') return;
 
         if (msg.type === 'ready') {
-          console.log(`[CamoufoxManager] Perfil "${profileName}" pronto e ativo!`);
-          this.emit('status_changed', { profileId, status: 'running' });
+          console.log(`[CamoufoxManager] Perfil "${profileName}" pronto e ativo! (Modo Economia: ${Boolean(economyMode)})`);
+          this.emit('status_changed', { profileId, status: 'running', economyMode });
           if (!isResolved) {
             isResolved = true;
             resolve({ success: true });
@@ -397,7 +401,7 @@ export class CamoufoxManager {
           this.emit('automation_finished', msg);
         } else if (msg.type === 'closed') {
           this.activeWorkers.delete(profileId);
-          this.emit('status_changed', { profileId, status: 'idle' });
+          this.emit('status_changed', { profileId, status: 'idle', economyMode: false });
         }
 
       });
@@ -405,7 +409,7 @@ export class CamoufoxManager {
       child.on('error', (err) => {
         console.error(`[CamoufoxManager] Erro no worker do perfil ${profileId}:`, err);
         this.activeWorkers.delete(profileId);
-        this.emit('status_changed', { profileId, status: 'idle' });
+        this.emit('status_changed', { profileId, status: 'idle', economyMode: false });
         if (!isResolved) {
           isResolved = true;
           resolve({ success: false, error: err.message });
@@ -415,7 +419,7 @@ export class CamoufoxManager {
       child.on('exit', (code) => {
         console.log(`[CamoufoxManager] Worker do perfil ${profileId} finalizado (código: ${code})`);
         this.activeWorkers.delete(profileId);
-        this.emit('status_changed', { profileId, status: 'idle' });
+        this.emit('status_changed', { profileId, status: 'idle', economyMode: false });
         if (!isResolved) {
           isResolved = true;
           if (code === 0) resolve({ success: true });

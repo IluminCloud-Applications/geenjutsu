@@ -27,6 +27,8 @@ export function formatCreatedDate(timestamp?: number | string | null): string {
   }
 }
 
+
+
 /**
  * Formats profile last opened / used time:
  * - If running: "Agora"
@@ -73,3 +75,23 @@ export function formatLastOpenedDate(
     return `${d}/${m}/${y}`;
   }
 }
+
+/**
+ * Formats a date/timestamp as "DD/MM HH:mm" (e.g. 22/10 20:30)
+ * using the user's local timezone.
+ */
+export function formatDateTime(timestamp?: number | string | null): string {
+  if (!timestamp) return '—';
+  const date = new Date(Number(timestamp));
+  if (isNaN(date.getTime())) return '—';
+
+  const d = String(date.getDate()).padStart(2, '0');
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const h = String(date.getHours()).padStart(2, '0');
+  const min = String(date.getMinutes()).padStart(2, '0');
+
+  return `${d}/${m} ${h}:${min}`;
+}
+
+
+

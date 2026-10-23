@@ -41,6 +41,7 @@ const {
   fingerprint,
   isWarmupOnly = false,
   warmupData,
+  economyMode = false,
 } = config;
 
 process.on('uncaughtException', (err) => {
@@ -712,6 +713,19 @@ async function run() {
     launchOpts.firefox_user_prefs['media.peerconnection.enabled'] = false;
   }
 
+  if (economyMode) {
+    launchOpts.firefox_user_prefs['browser.windows.titlemodifier'] = 'Geenjutsu [Modo Economia]';
+    launchOpts.firefox_user_prefs['browser.windows.titlemodifier.pinned'] = 'Geenjutsu [Modo Economia]';
+    launchOpts.firefox_user_prefs['browser.windows.titlemodifier.container'] = 'Geenjutsu [Modo Economia]';
+    launchOpts.firefox_user_prefs['media.autoplay.default'] = 5;
+    launchOpts.firefox_user_prefs['media.autoplay.blocking_policy'] = 2;
+    launchOpts.firefox_user_prefs['media.play-stand-alone'] = false;
+    launchOpts.firefox_user_prefs['media.videocontrols.lock-video'] = true;
+    launchOpts.firefox_user_prefs['browser.display.show_image_placeholders'] = true;
+    launchOpts.firefox_user_prefs['media.cache_size'] = 0;
+    launchOpts.firefox_user_prefs['media.memory_cache_max_size'] = 0;
+  }
+
   if (fingerprint?.resolution) {
     const parts = fingerprint.resolution.split('x').map(Number);
     if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
@@ -759,6 +773,68 @@ async function run() {
     } else {
       cleanup();
       throw err;
+    }
+  }
+
+  // Se o Modo Economia estiver ativo, intercepta todas as requisições de rede do contexto
+  // bloqueando vídeos, áudios, imagens e mídias pesadas para economizar dados de proxy residencial/4G.
+  if (economyMode) {
+    console.log(`[CamoufoxWorker] [Modo Economia] Ativado com sucesso para o perfil "${profileId}". Bloqueando imagens, vídeos e mídias para economia de dados.`);
+    try {
+      await context.route('**/*', async (route) => {
+        try {
+          const req = route.request();
+          const resourceType = req.resourceType();
+          const url = req.url().toLowerCase();
+
+          // 1. Sempre permitir serviços essenciais de captcha e verificação para criação de contas
+          const isCaptcha =
+            url.includes('recaptcha') ||
+            url.includes('hcaptcha') ||
+            url.includes('turnstile') ||
+            url.includes('challenges.cloudflare.com') ||
+            url.includes('arkoselabs') ||
+            url.includes('funcaptcha') ||
+            url.includes('geetest') ||
+            url.includes('captcha') ||
+            url.includes('challenge') ||
+            url.includes('identity/challenge');
+
+          if (isCaptcha) {
+            return route.continue().catch(() => {});
+          }
+
+          // 2. Bloquear tipos de recursos pesados (vídeos, áudios e imagens)
+          if (resourceType === 'media' || resourceType === 'image') {
+            return route.abort().catch(() => {});
+          }
+
+          // 3. Bloquear por extensão de arquivo pesada caso o recurso venha rotulado como 'fetch', 'xhr' ou 'other'
+          const isMediaOrImageExt = /\.(mp4|webm|mkv|avi|mov|flv|wmv|m3u8|ts|mp3|wav|ogg|aac|flac|m4a|png|jpg|jpeg|gif|webp|svg|ico|bmp|avif|tiff)(\?.*)?$/i.test(url);
+          if (isMediaOrImageExt) {
+            return route.abort().catch(() => {});
+          }
+
+          // 4. Bloquear CDNs conhecidas de streaming de vídeo e anúncios multimídia
+          const isVideoStreamingHost =
+            url.includes('googlevideo.com') ||
+            url.includes('video.xx.fbcdn.net') ||
+            url.includes('cdninstagram.com/v/') ||
+            url.includes('tiktokcdn.com/obj/video') ||
+            url.includes('byteoversea.com/obj/video') ||
+            url.includes('youtube.com/videoplayback');
+
+          if (isVideoStreamingHost) {
+            return route.abort().catch(() => {});
+          }
+
+          return route.continue().catch(() => {});
+        } catch {
+          route.continue().catch(() => {});
+        }
+      });
+    } catch (routeErr) {
+      console.warn('[CamoufoxWorker] Aviso ao configurar rotas de economia:', routeErr?.message || routeErr);
     }
   }
 

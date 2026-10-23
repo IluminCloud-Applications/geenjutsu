@@ -14,12 +14,24 @@ interface Window {
     onRequestClose: (callback: () => void) => () => void;
     openExternal: (url: string) => Promise<boolean>;
     getAppVersion?: () => Promise<string>;
-    launchProfile: (profile: any) => Promise<{ success: boolean; error?: string }>;
+    launchProfile: (profile: any, options?: { economyMode?: boolean }) => Promise<{ success: boolean; error?: string }>;
     stopProfile: (id: string) => Promise<{ success: boolean; error?: string }>;
     getRunningProfiles: () => Promise<string[]>;
     injectCookies: (profileId: string, cookies: any[]) => Promise<{ success: boolean; count: number; error?: string }>;
     getProfileHardware: (profileId: string, os?: string, fingerprint?: any) => Promise<any>;
     saveProfileHardware: (profileId: string, hardwareConfig: any) => Promise<boolean>;
+    getInitialDataSync?: () => {
+      profiles: any[];
+      folders: any[];
+      proxies: any[];
+      automations?: any[];
+      security?: any;
+      settings?: {
+        closeAction?: 'ask' | 'quit' | 'background';
+        onboardingCompleted?: boolean;
+      };
+      updatedAt?: number;
+    };
     getProfiles: () => Promise<any[]>;
     saveProfiles: (profiles: any[]) => Promise<boolean>;
     getFolders: () => Promise<any[]>;
@@ -38,7 +50,24 @@ interface Window {
     getWarmupStatus: (profileId: string) => Promise<any>;
     saveWarmupConfig: (profileId: string, config: any) => Promise<boolean>;
     getRunningWarmups?: () => Promise<string[]>;
-    onProfileStatusChange: (callback: (data: { profileId: string; status: 'idle' | 'running' | 'launching' }) => void) => () => void;
+
+    // Tables API
+    getTables?: () => Promise<import('../types').TableSummary[]>;
+    getTableById?: (id: string) => Promise<import('../types').CustomTable | null>;
+    createTable?: (input: import('../types').CreateTableInput) => Promise<import('../types').CustomTable>;
+    updateTable?: (id: string, updates: Partial<import('../types').CustomTable>) => Promise<boolean>;
+    deleteTable?: (id: string) => Promise<boolean>;
+    duplicateTable?: (tableId: string, includeData: boolean, newName?: string) => Promise<import('../types').CustomTable>;
+    addColumn?: (tableId: string, name: string, type: import('../types').TableColumnType, options?: string[]) => Promise<import('../types').TableColumn>;
+    updateColumn?: (columnId: string, updates: import('../types').UpdateColumnInput) => Promise<boolean>;
+    deleteColumn?: (columnId: string, tableId: string) => Promise<boolean>;
+    addRow?: (tableId: string, data?: Record<string, any>) => Promise<import('../types').TableRow>;
+    updateRow?: (rowId: string, data: Record<string, any>) => Promise<boolean>;
+    deleteRow?: (rowId: string) => Promise<boolean>;
+    reorderRows?: (tableId: string, rowIds: string[]) => Promise<boolean>;
+    getTableTemplates?: () => Promise<import('../types').TableTemplate[]>;
+
+    onProfileStatusChange: (callback: (data: { profileId: string; status: 'idle' | 'running' | 'launching'; economyMode?: boolean }) => void) => () => void;
     onCookiesUpdated: (callback: (data: { profileId: string; cookies: any[] }) => void) => () => void;
     onWarmupProgress: (callback: (data: any) => void) => () => void;
     onWarmupFinished: (callback: (data: any) => void) => () => void;

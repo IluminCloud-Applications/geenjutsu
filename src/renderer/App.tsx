@@ -4,10 +4,12 @@ import { PrimarySidebar } from './components/layout/PrimarySidebar';
 import { SecondarySidebar } from './components/layout/SecondarySidebar';
 import { ProxySidebar } from './components/layout/ProxySidebar';
 import { AutomationSidebar } from './components/layout/AutomationSidebar';
+import { TableSidebar } from './components/layout/TableSidebar';
 import { ProfilesView } from './views/ProfilesView';
 import { FoldersView } from './views/FoldersView';
 import { ProxiesView } from './views/ProxiesView';
 import { AutomationsView } from './views/AutomationsView';
+import { TablesView } from './views/TablesView';
 import { ReferralView } from './views/ReferralView';
 import { SecurityModal } from './components/security/SecurityModal';
 import { LockScreen } from './components/security/LockScreen';
@@ -50,17 +52,20 @@ export const App: React.FC = () => {
         {activeTab === 'profiles' && <SecondarySidebar />}
         {activeTab === 'proxies' && <ProxySidebar />}
         {activeTab === 'automations' && <AutomationSidebar />}
+        {activeTab === 'tables' && <TableSidebar />}
 
         <main className="flex-1 h-full flex flex-col overflow-hidden bg-card">
           {activeTab === 'profiles' && <ProfilesView />}
           {activeTab === 'folders' && <FoldersView />}
           {activeTab === 'proxies' && <ProxiesView />}
           {activeTab === 'automations' && <AutomationsView />}
+          {activeTab === 'tables' && <TablesView />}
           {activeTab === 'referral' && <ReferralView />}
           {activeTab !== 'profiles' &&
             activeTab !== 'folders' &&
             activeTab !== 'proxies' &&
             activeTab !== 'automations' &&
+            activeTab !== 'tables' &&
             activeTab !== 'referral' && (
               <div className="flex-1 h-full flex items-center justify-center text-[var(--muted)] text-xs">
                 Em breve

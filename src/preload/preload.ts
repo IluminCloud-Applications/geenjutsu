@@ -17,7 +17,7 @@ const geenjutsuApi = {
   getAppVersion: () => ipcRenderer.invoke('app:get-version'),
 
   // Browser Profile Operations (Camoufox Anti-Detect Engine)
-  launchProfile: (profile: any) => ipcRenderer.invoke('profiles:launch', profile),
+  launchProfile: (profile: any, options?: any) => ipcRenderer.invoke('profiles:launch', profile, options),
   stopProfile: (id: string) => ipcRenderer.invoke('profiles:stop', id),
   getRunningProfiles: () => ipcRenderer.invoke('profiles:get-running'),
   injectCookies: (profileId: string, cookies: any[]) =>
@@ -28,6 +28,7 @@ const geenjutsuApi = {
     ipcRenderer.invoke('profiles:save-hardware', { profileId, hardwareConfig }),
 
   // Data Store persistence hooks
+  getInitialDataSync: () => ipcRenderer.sendSync('store:get-initial-data-sync'),
   getProfiles: () => ipcRenderer.invoke('profiles:get-all'),
   saveProfiles: (profiles: any[]) => ipcRenderer.invoke('profiles:save-all', profiles),
   getFolders: () => ipcRenderer.invoke('folders:get-all'),
@@ -54,6 +55,29 @@ const geenjutsuApi = {
   getRunningWarmups: () => ipcRenderer.invoke('warmup:get-running'),
   saveWarmupConfig: (profileId: string, config: any) =>
     ipcRenderer.invoke('warmup:save-config', { profileId, config }),
+
+  // Custom Tables Operations (SQLite Engine)
+  getTables: () => ipcRenderer.invoke('tables:get-all'),
+  getTableById: (id: string) => ipcRenderer.invoke('tables:get-by-id', id),
+  createTable: (input: any) => ipcRenderer.invoke('tables:create', input),
+  updateTable: (id: string, updates: any) => ipcRenderer.invoke('tables:update', { id, updates }),
+  deleteTable: (id: string) => ipcRenderer.invoke('tables:delete', id),
+  duplicateTable: (tableId: string, includeData: boolean, newName?: string) =>
+    ipcRenderer.invoke('tables:duplicate', { tableId, includeData, newName }),
+  addColumn: (tableId: string, name: string, type: string, options?: string[]) =>
+    ipcRenderer.invoke('tables:add-column', { tableId, name, type, options }),
+  updateColumn: (columnId: string, updates: any) =>
+    ipcRenderer.invoke('tables:update-column', { columnId, updates }),
+  deleteColumn: (columnId: string, tableId: string) =>
+    ipcRenderer.invoke('tables:delete-column', { columnId, tableId }),
+  addRow: (tableId: string, data?: Record<string, any>) =>
+    ipcRenderer.invoke('tables:add-row', { tableId, data }),
+  updateRow: (rowId: string, data: Record<string, any>) =>
+    ipcRenderer.invoke('tables:update-row', { rowId, data }),
+  deleteRow: (rowId: string) => ipcRenderer.invoke('tables:delete-row', rowId),
+  reorderRows: (tableId: string, rowIds: string[]) =>
+    ipcRenderer.invoke('tables:reorder-rows', { tableId, rowIds }),
+  getTableTemplates: () => ipcRenderer.invoke('tables:get-templates'),
 
   // Event Listeners from Main Process
   onProfileStatusChange: (callback: (data: { profileId: string; status: 'idle' | 'running' | 'launching' }) => void) => {

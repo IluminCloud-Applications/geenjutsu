@@ -10,6 +10,7 @@ import { WarmupEngine } from './services/warmupEngine';
 import { WarmupScheduler } from './services/warmupScheduler';
 import { AutomationEngine } from './services/automationEngine';
 import { ProxyChecker } from './services/proxyChecker';
+import { TableStore } from './services/tableStore';
 
 
 process.env.NODE_NO_WARNINGS = '1';
@@ -457,7 +458,7 @@ app.whenReady().then(() => {
   });
 
   // Profile Operations IPC (Camoufox Browser & Redroid Android)
-  ipcMain.handle('profiles:launch', async (_, profileData: any) => {
+  ipcMain.handle('profiles:launch', async (_, profileData: any, options?: any) => {
     try {
       if (!profileData || !profileData.id) {
         return { success: false, error: 'ID do perfil não informado' };
@@ -488,6 +489,7 @@ app.whenReady().then(() => {
       const osTarget = osMap[profileData.os] || 'windows';
       const proxy = normalizeProxy(profileData.proxy);
       const initialUrl = resolvePlatformUrl(profileData.platform);
+      const economyMode = Boolean(profileData.economyMode || options?.economyMode);
 
       const res = await CamoufoxManager.openBrowser({
         profileId: profileData.id,
@@ -499,6 +501,7 @@ app.whenReady().then(() => {
         cookies: profileData.cookies || [],
         fingerprint: profileData.fingerprint,
         headless: false,
+        economyMode,
       });
 
       return res;
@@ -630,6 +633,10 @@ app.whenReady().then(() => {
   });
 
   // Data Store IPC (Persistence)
+  ipcMain.on('store:get-initial-data-sync', (event) => {
+    event.returnValue = DataStore.read();
+  });
+
   ipcMain.handle('profiles:get-all', () => {
     return DataStore.read().profiles;
   });
@@ -727,6 +734,133 @@ app.whenReady().then(() => {
     });
     DataStore.write({ profiles: updatedProfiles });
     return true;
+  });
+
+  // Custom Tables IPC (SQLite Engine)
+  ipcMain.handle('tables:get-all', () => {
+    try {
+      return TableStore.getTablesSummary();
+    } catch (err: any) {
+      console.error('[Main] Erro ao listar tabelas:', err);
+      return [];
+    }
+  });
+
+  ipcMain.handle('tables:get-by-id', (_, id: string) => {
+    try {
+      return TableStore.getTableById(id);
+    } catch (err: any) {
+      console.error('[Main] Erro ao obter tabela por id:', err);
+      return null;
+    }
+  });
+
+  ipcMain.handle('tables:create', (_, input: any) => {
+    try {
+      return TableStore.createTable(input);
+    } catch (err: any) {
+      console.error('[Main] Erro ao criar tabela:', err);
+      throw err;
+    }
+  });
+
+  ipcMain.handle('tables:update', (_, { id, updates }: { id: string; updates: any }) => {
+    try {
+      return TableStore.updateTable(id, updates);
+    } catch (err: any) {
+      console.error('[Main] Erro ao atualizar tabela:', err);
+      return false;
+    }
+  });
+
+  ipcMain.handle('tables:delete', (_, id: string) => {
+    try {
+      return TableStore.deleteTable(id);
+    } catch (err: any) {
+      console.error('[Main] Erro ao excluir tabela:', err);
+      return false;
+    }
+  });
+
+  ipcMain.handle('tables:duplicate', (_, { tableId, includeData, newName }: { tableId: string; includeData: boolean; newName?: string }) => {
+    try {
+      return TableStore.duplicateTable(tableId, includeData, newName);
+    } catch (err: any) {
+      console.error('[Main] Erro ao duplicar tabela:', err);
+      throw err;
+    }
+  });
+
+  ipcMain.handle('tables:add-column', (_, { tableId, name, type, options }: { tableId: string; name: string; type: any; options?: string[] }) => {
+    try {
+      return TableStore.addColumn(tableId, name, type, options);
+    } catch (err: any) {
+      console.error('[Main] Erro ao adicionar coluna:', err);
+      throw err;
+    }
+  });
+
+  ipcMain.handle('tables:update-column', (_, { columnId, updates }: { columnId: string; updates: any }) => {
+    try {
+      return TableStore.updateColumn(columnId, updates);
+    } catch (err: any) {
+      console.error('[Main] Erro ao atualizar coluna:', err);
+      return false;
+    }
+  });
+
+  ipcMain.handle('tables:delete-column', (_, { columnId, tableId }: { columnId: string; tableId: string }) => {
+    try {
+      return TableStore.deleteColumn(columnId, tableId);
+    } catch (err: any) {
+      console.error('[Main] Erro ao excluir coluna:', err);
+      return false;
+    }
+  });
+
+  ipcMain.handle('tables:add-row', (_, { tableId, data }: { tableId: string; data?: any }) => {
+    try {
+      return TableStore.addRow(tableId, data);
+    } catch (err: any) {
+      console.error('[Main] Erro ao adicionar linha:', err);
+      throw err;
+    }
+  });
+
+  ipcMain.handle('tables:update-row', (_, { rowId, data }: { rowId: string; data: any }) => {
+    try {
+      return TableStore.updateRow(rowId, data);
+    } catch (err: any) {
+      console.error('[Main] Erro ao atualizar linha:', err);
+      return false;
+    }
+  });
+
+  ipcMain.handle('tables:delete-row', (_, rowId: string) => {
+    try {
+      return TableStore.deleteRow(rowId);
+    } catch (err: any) {
+      console.error('[Main] Erro ao excluir linha:', err);
+      return false;
+    }
+  });
+
+  ipcMain.handle('tables:reorder-rows', (_, { tableId, rowIds }: { tableId: string; rowIds: string[] }) => {
+    try {
+      return TableStore.reorderRows(tableId, rowIds);
+    } catch (err: any) {
+      console.error('[Main] Erro ao reordenar linhas:', err);
+      return false;
+    }
+  });
+
+  ipcMain.handle('tables:get-templates', () => {
+    try {
+      return TableStore.getTemplates();
+    } catch (err: any) {
+      console.error('[Main] Erro ao buscar templates de tabelas:', err);
+      return [];
+    }
   });
 
   // Start automatic warmup scheduler (daily 24h & active interval)

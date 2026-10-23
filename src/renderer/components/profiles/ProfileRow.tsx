@@ -22,6 +22,7 @@ interface ProfileRowProps {
 export const ProfileRow: React.FC<ProfileRowProps> = ({ profile }) => {
   const {
     toggleLaunchProfile,
+    isProfileEconomy,
     setEditingProfile,
     updateProfile,
     moveToTrash,
@@ -56,6 +57,7 @@ export const ProfileRow: React.FC<ProfileRowProps> = ({ profile }) => {
   const isRunning = profile.status === 'running';
   const isLaunching = profile.status === 'launching';
   const isWarming = isProfileWarming(profile.id);
+  const isEconomy = isProfileEconomy ? isProfileEconomy(profile.id) : Boolean(profile.isEconomyMode);
 
   // Periodic ticker to update relative time (e.g. Há 5 min)
   const [, setTick] = useState(0);
@@ -230,6 +232,15 @@ export const ProfileRow: React.FC<ProfileRowProps> = ({ profile }) => {
           icon: profile.isPinned ? 'ri-unpin-line' : 'ri-pushpin-line',
           onClick: () => togglePinProfile(profile.id),
         },
+        ...(!isRunning && !isLaunching && !isWarming
+          ? [
+              {
+                label: t.actions.launchEconomy || 'Abrir em Modo Economia',
+                icon: 'ri-leaf-line text-emerald-500',
+                onClick: () => toggleLaunchProfile(profile.id, { economyMode: true }),
+              },
+            ]
+          : []),
         { label: t.actions.edit, icon: 'ri-edit-line', onClick: () => setEditingProfile(profile) },
         ...((isRunning || isLaunching)
           ? [
@@ -293,6 +304,15 @@ export const ProfileRow: React.FC<ProfileRowProps> = ({ profile }) => {
               >
                 {profile.name}
               </span>
+              {isRunning && isEconomy && (
+                <span
+                  title={t.actions.economyTooltip || 'Navegador aberto em Modo Economia (vídeos e imagens bloqueados para poupar tráfego do proxy)'}
+                  className="inline-flex items-center gap-1 text-[9.5px] font-medium text-emerald-400 bg-emerald-500/10 border border-emerald-500/25 px-1.5 py-0.2 rounded flex-shrink-0"
+                >
+                  <i className="ri-leaf-line text-[10px]" />
+                  {t.actions.economyBadge || 'Economia'}
+                </span>
+              )}
               {profile.isPinned && (
                 <span
                   title={t.actions.pinnedToTop}

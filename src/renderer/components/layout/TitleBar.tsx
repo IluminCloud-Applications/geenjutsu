@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useProfiles } from '../../context/ProfileContext';
+import { useTables } from '../../context/TableContext';
 import { useI18n } from '../../context/I18nContext';
 import { FolderIcon } from '../ui/FolderIcon';
 import { BrandTextLogo, AppIcon } from '../ui/BrandLogo';
@@ -40,6 +41,17 @@ export const TitleBar: React.FC<TitleBarProps> = ({ isLockScreen = false }) => {
     lockApp,
     handleCloseApp,
   } = useProfiles();
+
+  const {
+    activeTable,
+    tableSearchQuery,
+    setTableSearchQuery,
+    rowSearchQuery,
+    setRowSearchQuery,
+    setIsCreateTableModalOpen,
+    setIsAddColumnModalOpen,
+    addRow,
+  } = useTables();
 
   const { t } = useI18n();
   const [isFolderOpen, setIsFolderOpen] = useState(false);
@@ -595,6 +607,88 @@ export const TitleBar: React.FC<TitleBarProps> = ({ isLockScreen = false }) => {
                 <span>{t.automationsPage.newAutomation}</span>
               </button>
             </div>
+          </div>
+        </>
+      ) : activeTab === 'tables' ? (
+        <>
+          {/* Secondary sidebar header for tables */}
+          <div className="w-56 h-full flex items-center justify-between px-3.5 flex-shrink-0 border-r border-[var(--border)]/50 bg-[var(--sidebar-secondary)] titlebar-no-drag">
+            <BrandTextLogo heightClass="h-[15px]" />
+
+            <button
+              type="button"
+              onClick={() => setIsCreateTableModalOpen(true)}
+              className="inline-flex items-center gap-1 bg-red-600 hover:bg-red-700 active:scale-[0.97] text-white text-[11px] font-semibold px-2.5 py-1 rounded-lg transition-all duration-150 cursor-pointer"
+              style={{ boxShadow: '0 2px 6px rgba(220,38,38,0.28)' }}
+            >
+              <i className="ri-add-line text-xs leading-none" />
+              <span>{t.actions.create}</span>
+            </button>
+          </div>
+
+          {/* Main content header for tables */}
+          <div className="flex-1 h-full flex items-center justify-between px-4 bg-[var(--card)] titlebar-no-drag">
+            <div className="relative flex items-center w-64">
+              <i className="ri-search-line absolute left-2.5 text-[var(--muted)] text-xs pointer-events-none" />
+              <input
+                type="text"
+                value={activeTable ? rowSearchQuery : tableSearchQuery}
+                onChange={e => {
+                  if (activeTable) {
+                    setRowSearchQuery(e.target.value);
+                  } else {
+                    setTableSearchQuery(e.target.value);
+                  }
+                }}
+                placeholder={activeTable ? t.tablesPage.searchRowsPlaceholder : t.tablesPage.searchPlaceholder}
+                className="w-full h-[28px] bg-[var(--sidebar-primary)] text-[var(--foreground)] text-[11.5px] font-medium rounded-[6px] pl-7 pr-6 border border-[var(--border)] transition-all duration-150 focus:outline-none focus:border-red-500/50 focus:ring-1 focus:ring-red-500/10 placeholder:text-[var(--muted)] hover:border-[var(--border-hover)]"
+              />
+              {(activeTable ? rowSearchQuery : tableSearchQuery) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (activeTable) setRowSearchQuery('');
+                    else setTableSearchQuery('');
+                  }}
+                  className="absolute right-2 text-[var(--muted)] hover:text-[var(--foreground)] cursor-pointer transition-colors"
+                >
+                  <i className="ri-close-circle-fill text-xs" />
+                </button>
+              )}
+            </div>
+
+            {activeTable ? (
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => addRow()}
+                  className="inline-flex items-center gap-1 bg-red-600 hover:bg-red-700 active:scale-[0.97] text-white text-[11px] font-semibold px-2.5 py-1 rounded-lg transition-all duration-150 cursor-pointer"
+                  style={{ boxShadow: '0 2px 6px rgba(220,38,38,0.28)' }}
+                >
+                  <i className="ri-add-line text-xs leading-none" />
+                  <span>{t.tablesPage.addRow}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setIsAddColumnModalOpen(true)}
+                  className="inline-flex items-center gap-1 bg-[var(--muted-bg)] hover:bg-[var(--card)] hover:text-[var(--foreground)] text-[var(--muted)] border border-[var(--border)] text-[11px] font-medium px-2.5 py-1 rounded-lg transition-all duration-150 cursor-pointer"
+                >
+                  <i className="ri-layout-column-line text-xs leading-none" />
+                  <span>{t.tablesPage.addColumn}</span>
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setIsCreateTableModalOpen(true)}
+                className="inline-flex items-center gap-1 bg-red-600 hover:bg-red-700 active:scale-[0.97] text-white text-[11px] font-semibold px-2.5 py-1 rounded-lg transition-all duration-150 cursor-pointer sm:hidden"
+                style={{ boxShadow: '0 2px 6px rgba(220,38,38,0.28)' }}
+              >
+                <i className="ri-add-line text-xs leading-none" />
+                <span>{t.tablesPage.newTable}</span>
+              </button>
+            )}
           </div>
         </>
       ) : activeTab === 'referral' ? (

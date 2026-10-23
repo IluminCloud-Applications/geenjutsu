@@ -39,7 +39,9 @@ export class DataStore {
     try {
       const raw = fs.readFileSync(filePath, 'utf-8');
       const data: StorageData = JSON.parse(raw);
-      if (Array.isArray(data.profiles)) {
+      if (!Array.isArray(data.profiles)) {
+        data.profiles = [];
+      } else {
         data.profiles = data.profiles.map(p => {
           if (p.id && typeof p.id === 'string' && p.id.startsWith('p-')) {
             const realTs = Number(p.id.replace('p-', ''));
@@ -54,6 +56,12 @@ export class DataStore {
           }
           return p;
         });
+      }
+      if (!Array.isArray(data.folders)) {
+        data.folders = [];
+      }
+      if (!Array.isArray(data.proxies)) {
+        data.proxies = [];
       }
       if (!Array.isArray(data.automations)) {
         data.automations = [];

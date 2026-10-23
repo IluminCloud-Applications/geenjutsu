@@ -81,6 +81,8 @@ export interface Profile {
   lastWarmupAt?: number;
   nextWarmupAt?: number;
   totalWarmupSites?: number;
+  economyMode?: boolean;
+  isEconomyMode?: boolean;
 
   // Android Mode
   runtime?: 'browser' | 'android';

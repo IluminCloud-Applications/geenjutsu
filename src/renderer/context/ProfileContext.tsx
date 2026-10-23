@@ -107,7 +107,8 @@ interface ProfileContextType {
   createProfile: (input: ProfileCreateInput) => Profile;
   createBulkProfiles: (inputs: ProfileCreateInput[]) => Profile[];
   updateProfile: (input: ProfileUpdateInput) => void;
-  toggleLaunchProfile: (id: string) => void;
+  toggleLaunchProfile: (id: string, options?: { economyMode?: boolean }) => void;
+  isProfileEconomy: (profileId: string) => boolean;
   warmingProfileIds: string[];
   isProfileWarming: (profileId: string) => boolean;
   stopProfileWarmup: (profileId: string) => Promise<boolean>;
@@ -304,6 +305,20 @@ if (await firstResult.count() > 0) {
 const ProfileContext = createContext<ProfileContextType | undefined>(undefined);
 
 export const ProfileProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const initialData = React.useMemo(() => {
+    if (typeof window !== 'undefined' && window.geenjutsuApi?.getInitialDataSync) {
+      try {
+        const data = window.geenjutsuApi.getInitialDataSync();
+        if (data && typeof data === 'object') return data;
+      } catch (err) {
+        console.warn('[ProfileContext] Falha ao obter dados iniciais síncronos:', err);
+      }
+    }
+    return null;
+  }, []);
+
+  const isInitialMount = React.useRef(true);
+
   const [activeTab, setActiveTab] = useState<TabType>('profiles');
   const [selectedFolderId, setSelectedFolderId] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -344,6 +359,9 @@ export const ProfileProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
   // Close & Tray behavior state
   const [closeAction, setCloseActionState] = useState<CloseAction>(() => {
+    if (initialData?.settings?.closeAction) {
+      return initialData.settings.closeAction as CloseAction;
+    }
     const saved = localStorage.getItem('geenjutsu_close_action');
     if (saved === 'background' || saved === 'quit' || saved === 'ask') {
       return saved as CloseAction;
@@ -413,11 +431,14 @@ export const ProfileProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
   // Onboarding Modal: Shows only once on first launch
   const [isOnboardingModalOpen, setIsOnboardingModalOpen] = useState<boolean>(() => {
-    // 1. If marked completed in localStorage, never show
-    if (localStorage.getItem('geenjutsu_onboarding_completed') === 'true') {
+    // 1. If marked completed in initialData or localStorage, never show
+    if (initialData?.settings?.onboardingCompleted || localStorage.getItem('geenjutsu_onboarding_completed') === 'true') {
       return false;
     }
-    // 2. If cached profiles already exist, the user is already an active user
+    // 2. If cached profiles exist on disk or in localStorage, the user is already an active user
+    if (Array.isArray(initialData?.profiles) && initialData.profiles.length > 0) {
+      return false;
+    }
     try {
       const savedProfiles = localStorage.getItem('geenjutsu_profiles');
       if (savedProfiles) {
@@ -568,8 +589,13 @@ export const ProfileProvider: React.FC<{ children: React.ReactNode }> = ({ child
     toggleAllPrivacy();
   };
 
-  // Load from localStorage or initial
+  // Load from persistent DataStore (via initialData) or fallback to localStorage
   const [folders, setFolders] = useState<Folder[]>(() => {
+    if (Array.isArray(initialData?.folders) && initialData.folders.length > 0) {
+      return initialData.folders.map((f: Folder) =>
+        f.id === 'default' && f.name === 'Default Folder' ? { ...f, name: 'Pasta Padrão' } : f
+      );
+    }
     const saved = localStorage.getItem('geenjutsu_folders');
     if (!saved) return DEFAULT_FOLDERS;
     try {
@@ -600,6 +626,12 @@ export const ProfileProvider: React.FC<{ children: React.ReactNode }> = ({ child
   };
 
   const [profiles, setProfiles] = useState<Profile[]>(() => {
+    if (Array.isArray(initialData?.profiles) && initialData.profiles.length > 0) {
+      return repairProfileTimestamps(initialData.profiles).map(p => ({
+        ...p,
+        status: 'idle',
+      }));
+    }
     const saved = localStorage.getItem('geenjutsu_profiles');
     const list = saved ? JSON.parse(saved) : INITIAL_PROFILES;
     return repairProfileTimestamps(list).map(p => ({
@@ -608,19 +640,33 @@ export const ProfileProvider: React.FC<{ children: React.ReactNode }> = ({ child
     }));
   });
 
+  const [economyProfileIds, setEconomyProfileIds] = useState<Set<string>>(new Set());
+
   const [proxies, setProxies] = useState<ProxyItem[]>(() => {
+    if (Array.isArray(initialData?.proxies) && initialData.proxies.length > 0) {
+      return initialData.proxies;
+    }
     const saved = localStorage.getItem('geenjutsu_proxies');
     return saved ? JSON.parse(saved) : INITIAL_PROXIES;
   });
 
   const [automations, setAutomations] = useState<AutomationItem[]>(() => {
+    if (Array.isArray(initialData?.automations) && initialData.automations.length > 0) {
+      return initialData.automations;
+    }
     const saved = localStorage.getItem('geenjutsu_automations');
     return saved ? JSON.parse(saved) : INITIAL_AUTOMATIONS;
   });
 
   // Initial sync with Electron main process and register listeners
   useEffect(() => {
-    if (!window.geenjutsuApi) return;
+    const mountTimer = setTimeout(() => {
+      isInitialMount.current = false;
+    }, 200);
+
+    if (!window.geenjutsuApi) {
+      return () => clearTimeout(mountTimer);
+    }
 
     window.geenjutsuApi.getProfiles().then((diskProfiles) => {
       if (Array.isArray(diskProfiles) && diskProfiles.length > 0) {
@@ -629,22 +675,26 @@ export const ProfileProvider: React.FC<{ children: React.ReactNode }> = ({ child
           status: 'idle' as const,
         }));
         setProfiles(repaired);
+        localStorage.setItem('geenjutsu_profiles', JSON.stringify(repaired));
         completeOnboarding();
       }
     });
     window.geenjutsuApi.getFolders().then((diskFolders) => {
       if (Array.isArray(diskFolders) && diskFolders.length > 0) {
         setFolders(diskFolders);
+        localStorage.setItem('geenjutsu_folders', JSON.stringify(diskFolders));
       }
     });
     window.geenjutsuApi.getProxies().then((diskProxies) => {
       if (Array.isArray(diskProxies) && diskProxies.length > 0) {
         setProxies(diskProxies);
+        localStorage.setItem('geenjutsu_proxies', JSON.stringify(diskProxies));
       }
     });
     window.geenjutsuApi.getAutomations?.().then((diskAutomations) => {
       if (Array.isArray(diskAutomations) && diskAutomations.length > 0) {
         setAutomations(diskAutomations);
+        localStorage.setItem('geenjutsu_automations', JSON.stringify(diskAutomations));
       }
     });
     window.geenjutsuApi.getRunningProfiles().then((runningIds) => {
@@ -658,10 +708,28 @@ export const ProfileProvider: React.FC<{ children: React.ReactNode }> = ({ child
     });
 
     // Listen to profile status changes (e.g. user closed browser)
-    const unsubStatus = window.geenjutsuApi.onProfileStatusChange(({ profileId, status }) => {
+    const unsubStatus = window.geenjutsuApi.onProfileStatusChange(({ profileId, status, economyMode }) => {
       setProfiles((prev) =>
-        prev.map((p) => (p.id === profileId ? { ...p, status } : p))
+        prev.map((p) =>
+          p.id === profileId
+            ? {
+                ...p,
+                status,
+                isEconomyMode: status === 'running' ? Boolean(economyMode) : false,
+              }
+            : p
+        )
       );
+      if (status === 'idle') {
+        setEconomyProfileIds((prev) => {
+          if (!prev.has(profileId)) return prev;
+          const next = new Set(prev);
+          next.delete(profileId);
+          return next;
+        });
+      } else if (status === 'running' && economyMode) {
+        setEconomyProfileIds((prev) => new Set(prev).add(profileId));
+      }
     });
 
     // Listen to cookies updated from Camoufox
@@ -750,6 +818,7 @@ export const ProfileProvider: React.FC<{ children: React.ReactNode }> = ({ child
     });
 
     return () => {
+      clearTimeout(mountTimer);
       unsubStatus?.();
       unsubCookies?.();
       unsubAutoState?.();
@@ -763,6 +832,7 @@ export const ProfileProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
   // Save to localStorage & DataStore (sempre persiste status como 'idle' para evitar carregar 'launching' ou 'running' após fechar o app)
   useEffect(() => {
+    if (isInitialMount.current) return;
     const sanitized = profiles.map(p => (p.status !== 'idle' ? { ...p, status: 'idle' } : p));
     localStorage.setItem('geenjutsu_profiles', JSON.stringify(sanitized));
     window.geenjutsuApi?.saveProfiles?.(sanitized);
@@ -791,16 +861,19 @@ export const ProfileProvider: React.FC<{ children: React.ReactNode }> = ({ child
   }, [profiles]);
 
   useEffect(() => {
+    if (isInitialMount.current) return;
     localStorage.setItem('geenjutsu_folders', JSON.stringify(folders));
     window.geenjutsuApi?.saveFolders?.(folders);
   }, [folders]);
 
   useEffect(() => {
+    if (isInitialMount.current) return;
     localStorage.setItem('geenjutsu_proxies', JSON.stringify(proxies));
     window.geenjutsuApi?.saveProxies?.(proxies);
   }, [proxies]);
 
   useEffect(() => {
+    if (isInitialMount.current) return;
     localStorage.setItem('geenjutsu_automations', JSON.stringify(automations));
     window.geenjutsuApi?.saveAutomations?.(automations);
   }, [automations]);
@@ -1171,7 +1244,9 @@ export const ProfileProvider: React.FC<{ children: React.ReactNode }> = ({ child
     );
   };
 
-  const toggleLaunchProfile = async (id: string) => {
+  const isProfileEconomy = (id: string) => economyProfileIds.has(id);
+
+  const toggleLaunchProfile = async (id: string, options?: { economyMode?: boolean }) => {
     if (isProfileWarming(id)) {
       console.warn('[Geenjutsu] O perfil está em processo de aquecimento de cookies. Não é possível iniciar agora.');
       return;
@@ -1180,25 +1255,50 @@ export const ProfileProvider: React.FC<{ children: React.ReactNode }> = ({ child
     if (!target) return;
 
     if (target.status === 'running') {
+      setEconomyProfileIds(prev => {
+        if (!prev.has(id)) return prev;
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
       setProfiles(prev =>
-        prev.map(p => (p.id === id ? { ...p, status: 'idle' } : p))
+        prev.map(p => (p.id === id ? { ...p, status: 'idle', isEconomyMode: false } : p))
       );
       if (window.geenjutsuApi?.stopProfile) {
         await window.geenjutsuApi.stopProfile(id);
       }
     } else {
+      const isEconomy = Boolean(options?.economyMode);
+      if (isEconomy) {
+        setEconomyProfileIds(prev => new Set(prev).add(id));
+      } else {
+        setEconomyProfileIds(prev => {
+          if (!prev.has(id)) return prev;
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
+      }
+
       setProfiles(prev =>
-        prev.map(p => (p.id === id ? { ...p, status: 'launching' } : p))
+        prev.map(p => (p.id === id ? { ...p, status: 'launching', isEconomyMode: isEconomy } : p))
       );
 
       if (window.geenjutsuApi?.launchProfile) {
         try {
-          const res = await window.geenjutsuApi.launchProfile(target);
+          const profilePayload = isEconomy ? { ...target, economyMode: true } : target;
+          const res = await window.geenjutsuApi.launchProfile(profilePayload, { economyMode: isEconomy });
           if (res && !res.success) {
             console.error('[Geenjutsu] Erro ao abrir perfil:', res.error);
             alert(`Não foi possível iniciar o perfil "${target.name}":\n\n${res.error || 'Erro desconhecido'}`);
+            setEconomyProfileIds(prev => {
+              if (!prev.has(id)) return prev;
+              const next = new Set(prev);
+              next.delete(id);
+              return next;
+            });
             setProfiles(prev =>
-              prev.map(p => (p.id === id ? { ...p, status: 'idle' } : p))
+              prev.map(p => (p.id === id ? { ...p, status: 'idle', isEconomyMode: false } : p))
             );
             return;
           }
@@ -1209,21 +1309,28 @@ export const ProfileProvider: React.FC<{ children: React.ReactNode }> = ({ child
               return {
                 ...p,
                 status: resolvedStatus,
+                isEconomyMode: isEconomy,
                 lastLaunchedAt: Date.now(),
               };
             })
           );
         } catch (err) {
           console.error('[Geenjutsu] Erro ao lançar perfil:', err);
+          setEconomyProfileIds(prev => {
+            if (!prev.has(id)) return prev;
+            const next = new Set(prev);
+            next.delete(id);
+            return next;
+          });
           setProfiles(prev =>
-            prev.map(p => (p.id === id ? { ...p, status: 'idle' } : p))
+            prev.map(p => (p.id === id ? { ...p, status: 'idle', isEconomyMode: false } : p))
           );
         }
       } else {
         setProfiles(prev =>
           prev.map(p =>
             p.id === id
-              ? { ...p, status: 'running', lastLaunchedAt: Date.now() }
+              ? { ...p, status: 'running', isEconomyMode: isEconomy, lastLaunchedAt: Date.now() }
               : p
           )
         );
@@ -1588,6 +1695,7 @@ export const ProfileProvider: React.FC<{ children: React.ReactNode }> = ({ child
         createBulkProfiles,
         updateProfile,
         toggleLaunchProfile,
+        isProfileEconomy,
         warmingProfileIds,
         isProfileWarming,
         stopProfileWarmup,

@@ -4,6 +4,7 @@ import { App } from './App';
 import { ThemeProvider } from './context/ThemeContext';
 import { I18nProvider } from './context/I18nContext';
 import { ProfileProvider } from './context/ProfileContext';
+import { TableProvider } from './context/TableContext';
 import './index.css';
 
 class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean; error: Error | null }> {
@@ -59,7 +60,9 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
       <ThemeProvider>
         <I18nProvider>
           <ProfileProvider>
-            <App />
+            <TableProvider>
+              <App />
+            </TableProvider>
           </ProfileProvider>
         </I18nProvider>
       </ThemeProvider>
