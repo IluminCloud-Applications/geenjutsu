@@ -35,7 +35,7 @@ export class WarmupScheduler {
       });
     }, 60000);
 
-    console.log('[WarmupScheduler] Monitor de aquecimento inteligente (janela 21-27h) iniciado.');
+    console.log('[WarmupScheduler] Monitor de aquecimento inteligente em modo fila (1 perfil por vez) iniciado.');
   }
 
   static stop(): void {
@@ -56,19 +56,18 @@ export class WarmupScheduler {
     // Must still be idle (user didn't re-open it)
     if (CamoufoxManager.isProfileRunning(profileId)) return;
 
-    // Warmup must not already be running
-    const state = WarmupEngine.getStatus(profileId);
-    if (state.isRunning) return;
+    // Warmup must not already be running or queued for this profile
+    if (WarmupEngine.isWarmupRunning(profileId) || WarmupEngine.isQueued(profileId)) return;
 
     const now = Date.now();
     if (!profile.nextWarmupAt || now >= profile.nextWarmupAt) {
-      console.log(`[WarmupScheduler] Navegador do perfil "${profile.name}" foi fechado. Disparando aquecimento pendente em segundo plano...`);
+      console.log(`[WarmupScheduler] Navegador do perfil "${profile.name}" foi fechado. Adicionando aquecimento pendente à fila...`);
       await this.runWarmupForProfile(profile);
     }
   }
 
   /**
-   * Evaluates all profiles with warmupConfig enabled
+   * Evaluates all profiles with warmupConfig enabled and queues due profiles
    */
   private static async checkDueWarmups(): Promise<void> {
     const data = DataStore.read();
@@ -80,9 +79,10 @@ export class WarmupScheduler {
       const config = profile.warmupConfig;
       if (!config || !config.enabled) continue;
 
-      // 1. If warmup is already running for this profile, skip
-      const state = WarmupEngine.getStatus(profile.id);
-      if (state.isRunning) continue;
+      // 1. If warmup is already running or queued for this profile, skip
+      if (WarmupEngine.isWarmupRunning(profile.id) || WarmupEngine.isQueued(profile.id)) {
+        continue;
+      }
 
       // 2. CRITICAL RULE: If browser is currently open/running by the user, DO NOT run warmup!
       // Wait until the user finishes their work and closes the browser.
@@ -103,12 +103,8 @@ export class WarmupScheduler {
 
       // 4. Check if due time has been reached
       if (now >= profile.nextWarmupAt) {
-        console.log(`[WarmupScheduler] Disparando aquecimento humanizado inteligente (janela 21-27h) para o perfil "${profile.name}" (${profile.id})...`);
+        console.log(`[WarmupScheduler] Perfil "${profile.name}" (${profile.id}) atingiu horário de aquecimento. Encaminhando para modo fila...`);
         await this.runWarmupForProfile(profile);
-
-        // Throttle: don't start multiple profiles at the exact same second
-        // Break after launching one profile to let the next scheduler tick handle subsequent ones
-        break;
       }
     }
 
@@ -126,11 +122,15 @@ export class WarmupScheduler {
     const siteMax = config.siteCountMax || 24;
     const chosenSiteCount = Math.floor(Math.random() * (siteMax - siteMin + 1)) + siteMin;
 
-    await WarmupEngine.startWarmup(profile.id, {
-      siteCountMin: Math.max(5, chosenSiteCount - 3),
-      siteCountMax: chosenSiteCount,
-      timePerSiteMin: config.timePerSiteMin || 30,
-      timePerSiteMax: config.timePerSiteMax || 80,
-    });
+    await WarmupEngine.startWarmup(
+      profile.id,
+      {
+        siteCountMin: Math.max(5, chosenSiteCount - 3),
+        siteCountMax: chosenSiteCount,
+        timePerSiteMin: config.timePerSiteMin || 30,
+        timePerSiteMax: config.timePerSiteMax || 80,
+      },
+      'auto'
+    );
   }
 }

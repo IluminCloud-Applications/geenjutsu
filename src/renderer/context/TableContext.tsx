@@ -57,6 +57,7 @@ interface TableContextType {
   addColumn: (name: string, type: TableColumnType, options?: string[]) => Promise<TableColumn | null>;
   updateColumn: (columnId: string, updates: { name?: string; type?: TableColumnType; options?: string[]; position?: number }) => Promise<boolean>;
   deleteColumn: (columnId: string) => Promise<boolean>;
+  reorderColumns: (columnIds: string[]) => Promise<boolean>;
   addRow: (data?: Record<string, any>) => Promise<TableRow | null>;
   updateCell: (rowId: string, columnId: string, value: any) => Promise<boolean>;
   deleteRow: (rowId: string) => Promise<boolean>;
@@ -247,6 +248,39 @@ export const TableProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     return ok;
   }, [activeTable]);
 
+  const reorderColumns = useCallback(async (columnIds: string[]): Promise<boolean> => {
+    if (!activeTable) return false;
+
+    // Optimistic UI update
+    const idToCol = new Map(activeTable.columns.map(c => [c.id, c]));
+    const reordered: TableColumn[] = [];
+    columnIds.forEach((id, idx) => {
+      const col = idToCol.get(id);
+      if (col) {
+        reordered.push({ ...col, position: idx });
+      }
+    });
+
+    setActiveTable(prev => {
+      if (!prev) return null;
+      return {
+        ...prev,
+        columns: reordered,
+        updatedAt: Date.now(),
+      };
+    });
+
+    if (window.geenjutsuApi?.reorderColumns) {
+      try {
+        return await window.geenjutsuApi.reorderColumns(activeTable.id, columnIds);
+      } catch (err) {
+        console.error('[TableContext] Erro ao reordenar colunas:', err);
+        return false;
+      }
+    }
+    return true;
+  }, [activeTable]);
+
   const addRow = useCallback(async (data: Record<string, any> = {}): Promise<TableRow | null> => {
     if (!activeTable || !window.geenjutsuApi?.addRow) return null;
     const now = Date.now();
@@ -375,6 +409,7 @@ export const TableProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       addColumn,
       updateColumn,
       deleteColumn,
+      reorderColumns,
       addRow,
       updateCell,
       deleteRow,
@@ -406,6 +441,7 @@ export const TableProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       addColumn,
       updateColumn,
       deleteColumn,
+      reorderColumns,
       addRow,
       updateCell,
       deleteRow,

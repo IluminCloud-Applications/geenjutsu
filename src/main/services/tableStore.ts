@@ -28,7 +28,7 @@ export const TABLE_TEMPLATES: TableTemplate[] = [
         options: ['Ativa', 'Restrita', 'Em Análise', 'Aquecendo', 'Desativada'],
       },
       { name: 'Gasto Diário (R$)', type: 'number' },
-      { name: 'Chave 2FA / Backup', type: 'text' },
+      { name: 'Chave 2FA / Backup', type: '2fa' },
       {
         name: 'Status da Conta',
         type: 'select',
@@ -318,23 +318,13 @@ export class TableStore {
         if (!description) description = template.description;
         icon = template.icon;
         color = template.color;
-        initialColumns = template.columns;
+        initialColumns = template.columns || [];
         initialSampleRows = template.sampleRows;
       }
     }
 
     if (!name) {
       name = 'Nova Tabela';
-    }
-
-    if (initialColumns.length === 0) {
-      initialColumns = [
-        { name: 'Nome / Identificador', type: 'text' },
-        { name: 'Perfil Geenjutsu', type: 'profile' },
-        { name: 'Status', type: 'select', options: ['Pendente', 'Em Andamento', 'Concluído'] },
-        { name: 'Criado em', type: 'date' },
-        { name: 'Observações', type: 'text' },
-      ];
     }
 
     db.exec('BEGIN TRANSACTION;');
@@ -346,15 +336,17 @@ export class TableStore {
 
       const colNameToIdMap: Record<string, string> = {};
 
-      initialColumns.forEach((col, idx) => {
-        const colId = `col-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 5)}`;
-        colNameToIdMap[col.name] = colId;
-        const optionsJson = col.options ? JSON.stringify(col.options) : null;
-        db.prepare(`
-          INSERT INTO table_columns (id, table_id, name, type, position, options, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
-        `).run(colId, tableId, col.name, col.type, idx, optionsJson, now);
-      });
+      if (initialColumns.length > 0) {
+        initialColumns.forEach((col, idx) => {
+          const colId = `col-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 5)}`;
+          colNameToIdMap[col.name] = colId;
+          const optionsJson = col.options ? JSON.stringify(col.options) : null;
+          db.prepare(`
+            INSERT INTO table_columns (id, table_id, name, type, position, options, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+          `).run(colId, tableId, col.name, col.type, idx, optionsJson, now);
+        });
+      }
 
       if (initialSampleRows && initialSampleRows.length > 0) {
         initialSampleRows.forEach((sample, rIdx) => {
@@ -371,15 +363,6 @@ export class TableStore {
             VALUES (?, ?, ?, ?, ?, ?)
           `).run(rowId, tableId, JSON.stringify(rowData), rIdx, now, now);
         });
-      } else {
-        // Create 2 empty rows ready for user input
-        for (let rIdx = 0; rIdx < 2; rIdx++) {
-          const rowId = `row-${Date.now()}-${rIdx}-${Math.random().toString(36).substring(2, 5)}`;
-          db.prepare(`
-            INSERT INTO table_rows (id, table_id, data, position, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-          `).run(rowId, tableId, JSON.stringify({}), rIdx, now, now);
-        }
       }
 
       db.exec('COMMIT;');
@@ -715,6 +698,23 @@ export class TableStore {
     try {
       const stmt = db.prepare('UPDATE table_rows SET position = ? WHERE id = ? AND table_id = ?');
       rowIds.forEach((id, index) => {
+        stmt.run(index, id, tableId);
+      });
+      db.prepare('UPDATE custom_tables SET updated_at = ? WHERE id = ?').run(Date.now(), tableId);
+      db.exec('COMMIT;');
+      return true;
+    } catch (err) {
+      db.exec('ROLLBACK;');
+      throw err;
+    }
+  }
+
+  static reorderColumns(tableId: string, columnIds: string[]): boolean {
+    const db = this.getDb();
+    db.exec('BEGIN TRANSACTION;');
+    try {
+      const stmt = db.prepare('UPDATE table_columns SET position = ? WHERE id = ? AND table_id = ?');
+      columnIds.forEach((id, index) => {
         stmt.run(index, id, tableId);
       });
       db.prepare('UPDATE custom_tables SET updated_at = ? WHERE id = ?').run(Date.now(), tableId);

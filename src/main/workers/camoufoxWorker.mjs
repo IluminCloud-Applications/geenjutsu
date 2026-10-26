@@ -6,24 +6,41 @@ import path from 'path';
 import os from 'os';
 import { execSync } from 'child_process';
 import { SocksClient } from 'socks';
+import AdmZip from 'adm-zip';
 import { Camoufox } from 'camoufox-js';
 import { launchOptions } from 'camoufox-js/dist/utils.js';
 import { generateFingerprint } from 'camoufox-js/dist/fingerprints.js';
 import { sampleWebGL } from 'camoufox-js/dist/webgl/sample.js';
+import { INSTALL_DIR, OS_NAME } from 'camoufox-js/dist/pkgman.js';
 
-// 1. Parse configuration from CLI arguments
+// 1. Parse configuration from CLI arguments or configuration file
 const isHardwareGenOnly = process.argv[2] === '--generate-hardware';
 
 let config = {};
 if (!isHardwareGenOnly) {
-  const configArg = process.argv[2];
-  if (!configArg) {
+  let configStr = '';
+  if (process.argv[2] === '--config-file') {
+    const configPath = process.argv[3];
+    try {
+      configStr = fs.readFileSync(configPath, 'utf-8');
+      try {
+        fs.unlinkSync(configPath);
+      } catch {}
+    } catch (e) {
+      console.error('[CamoufoxWorker] Erro ao ler arquivo de configuração:', e);
+      process.exit(1);
+    }
+  } else {
+    configStr = process.argv[2];
+  }
+
+  if (!configStr) {
     console.error('[CamoufoxWorker] Erro: Argumentos de configuração não fornecidos.');
     process.exit(1);
   }
 
   try {
-    config = JSON.parse(configArg);
+    config = JSON.parse(configStr);
   } catch (e) {
     console.error('[CamoufoxWorker] Erro ao analisar JSON de configuração:', e);
     process.exit(1);
@@ -513,14 +530,29 @@ async function executeHumanWarmup(context, targetPage, warmupOptions, syncCookie
   return { success: !warmupCancelled, warmedCount };
 }
 
+function getCamoufoxResourcePaths() {
+  const base = INSTALL_DIR ? INSTALL_DIR.toString() : path.join(os.homedir(), '.cache/camoufox');
+  if (OS_NAME === 'mac') {
+    const resDir = path.join(base, 'Camoufox.app', 'Contents', 'Resources');
+    return {
+      omniPath: path.join(resDir, 'browser', 'omni.ja'),
+      polPath: path.join(resDir, 'distribution', 'policies.json'),
+      markerPath: path.join(resDir, 'browser', '.geenjutsu_branded'),
+    };
+  }
+  return {
+    omniPath: path.join(base, 'browser', 'omni.ja'),
+    polPath: path.join(base, 'distribution', 'policies.json'),
+    markerPath: path.join(base, 'browser', '.geenjutsu_branded'),
+  };
+}
+
 function ensureGeenjutsuBranding() {
   try {
-    const home = os.homedir();
-    const omniPath = path.join(home, '.cache/camoufox/browser/omni.ja');
+    const { omniPath, polPath, markerPath } = getCamoufoxResourcePaths();
     if (!fs.existsSync(omniPath)) return;
 
     // 1. Ensure DisplayBookmarksToolbar in policies.json is always
-    const polPath = path.join(home, '.cache/camoufox/distribution/policies.json');
     if (fs.existsSync(polPath)) {
       try {
         let pol = fs.readFileSync(polPath, 'utf-8');
@@ -532,36 +564,41 @@ function ensureGeenjutsuBranding() {
     }
 
     // 2. Check if omni.ja was already branded
-    const markerPath = path.join(home, '.cache/camoufox/browser/.geenjutsu_branded');
     if (fs.existsSync(markerPath)) return;
 
-    const tmpDir = path.join(os.tmpdir(), `geenjutsu-brand-${Date.now()}`);
-    fs.mkdirSync(tmpDir, { recursive: true });
-
     try {
-      execSync(`unzip -q "${omniPath}" localization/en-US/branding/brand.ftl chrome/en-US/locale/branding/brand.dtd -d "${tmpDir}"`, { stdio: 'ignore' });
+      const zip = new AdmZip(omniPath);
+      let changed = false;
 
-      const ftlPath = path.join(tmpDir, 'localization/en-US/branding/brand.ftl');
-      if (fs.existsSync(ftlPath)) {
-        let ftl = fs.readFileSync(ftlPath, 'utf-8');
-        ftl = ftl.replace(/Camoufox/g, 'Geenjutsu');
-        fs.writeFileSync(ftlPath, ftl, 'utf-8');
+      const ftlEntry = zip.getEntry('localization/en-US/branding/brand.ftl');
+      if (ftlEntry) {
+        let ftl = zip.readAsText(ftlEntry);
+        if (ftl.includes('Camoufox')) {
+          ftl = ftl.replace(/Camoufox/g, 'Geenjutsu');
+          zip.updateFile('localization/en-US/branding/brand.ftl', Buffer.from(ftl, 'utf-8'));
+          changed = true;
+        }
       }
 
-      const dtdPath = path.join(tmpDir, 'chrome/en-US/locale/branding/brand.dtd');
-      if (fs.existsSync(dtdPath)) {
-        let dtd = fs.readFileSync(dtdPath, 'utf-8');
-        dtd = dtd.replace(/Camoufox/g, 'Geenjutsu');
-        fs.writeFileSync(dtdPath, dtd, 'utf-8');
+      const dtdEntry = zip.getEntry('chrome/en-US/locale/branding/brand.dtd');
+      if (dtdEntry) {
+        let dtd = zip.readAsText(dtdEntry);
+        if (dtd.includes('Camoufox')) {
+          dtd = dtd.replace(/Camoufox/g, 'Geenjutsu');
+          zip.updateFile('chrome/en-US/locale/branding/brand.dtd', Buffer.from(dtd, 'utf-8'));
+          changed = true;
+        }
       }
 
-      execSync(`cd "${tmpDir}" && zip -0 -q "${omniPath}" localization/en-US/branding/brand.ftl chrome/en-US/locale/branding/brand.dtd`, { stdio: 'ignore' });
-      fs.writeFileSync(markerPath, '1', 'utf-8');
-      console.log('[CamoufoxWorker] Branding Geenjutsu aplicado em omni.ja com sucesso.');
+      if (changed) {
+        zip.writeZip(omniPath);
+        fs.writeFileSync(markerPath, '1', 'utf-8');
+        console.log('[CamoufoxWorker] Branding Geenjutsu aplicado em omni.ja com sucesso via AdmZip.');
+      } else {
+        fs.writeFileSync(markerPath, '1', 'utf-8');
+      }
     } catch (bErr) {
       console.warn('[CamoufoxWorker] Aviso ao aplicar branding em omni.ja:', bErr?.message);
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   } catch {}
 }
@@ -1121,9 +1158,21 @@ async function run() {
 
 if (isHardwareGenOnly) {
   let hwPayload = {};
-  try {
-    hwPayload = JSON.parse(process.argv[3] || '{}');
-  } catch {}
+  if (process.argv[3] === '--config-file') {
+    const configPath = process.argv[4];
+    try {
+      hwPayload = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+      try {
+        fs.unlinkSync(configPath);
+      } catch {}
+    } catch (e) {
+      console.error('[CamoufoxWorker] Erro ao ler arquivo de hardware config:', e);
+    }
+  } else {
+    try {
+      hwPayload = JSON.parse(process.argv[3] || '{}');
+    } catch {}
+  }
   const targetProfileDir = hwPayload.profileDir;
   const targetProfileId = hwPayload.profileId;
   const targetOs = hwPayload.osTarget || 'windows';

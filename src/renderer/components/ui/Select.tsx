@@ -1,4 +1,5 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useLayoutEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { FolderIcon } from './FolderIcon';
@@ -32,18 +33,76 @@ export const Select: React.FC<SelectProps> = ({
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  const [menuPos, setMenuPos] = useState<{ top: number; left: number; width: number; ready: boolean }>({
+    top: 0,
+    left: 0,
+    width: 0,
+    ready: false,
+  });
 
   const selectedOption = options.find(opt => opt.value === value);
 
+  const updatePosition = () => {
+    if (!triggerRef.current) return;
+    const rect = triggerRef.current.getBoundingClientRect();
+    const winH = window.innerHeight;
+    const menuHeight = 220;
+    let top = rect.bottom + 4;
+
+    // Flip upwards if overflows bottom
+    if (top + menuHeight > winH - 10 && rect.top - menuHeight - 4 >= 10) {
+      top = rect.top - menuHeight - 4;
+    }
+
+    setMenuPos({
+      top: Math.round(top),
+      left: Math.round(rect.left),
+      width: Math.round(rect.width),
+      ready: true,
+    });
+  };
+
+  useLayoutEffect(() => {
+    if (!isOpen) return;
+    updatePosition();
+  }, [isOpen, options]);
+
   useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        setIsOpen(false);
+    if (!isOpen) return;
+
+    const handleOutside = (e: MouseEvent) => {
+      if (
+        containerRef.current?.contains(e.target as Node) ||
+        menuRef.current?.contains(e.target as Node)
+      ) {
+        return;
       }
+      setIsOpen(false);
     };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
+
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setIsOpen(false);
+    };
+
+    const handleScrollOrResize = () => {
+      updatePosition();
+    };
+
+    document.addEventListener('mousedown', handleOutside);
+    document.addEventListener('keydown', handleEsc);
+    window.addEventListener('scroll', handleScrollOrResize, true);
+    window.addEventListener('resize', handleScrollOrResize);
+
+    return () => {
+      document.removeEventListener('mousedown', handleOutside);
+      document.removeEventListener('keydown', handleEsc);
+      window.removeEventListener('scroll', handleScrollOrResize, true);
+      window.removeEventListener('resize', handleScrollOrResize);
+    };
+  }, [isOpen]);
 
   return (
     <div className={twMerge('w-full flex flex-col gap-1.5 select-none relative', className)} ref={containerRef}>
@@ -53,6 +112,7 @@ export const Select: React.FC<SelectProps> = ({
 
       {/* Trigger Button */}
       <button
+        ref={triggerRef}
         type="button"
         disabled={disabled}
         onClick={() => !disabled && setIsOpen(!isOpen)}
@@ -85,62 +145,76 @@ export const Select: React.FC<SelectProps> = ({
         />
       </button>
 
-      {/* Options Dropdown */}
-      {isOpen && (
-        <div
-          className="absolute top-[calc(100%+5px)] left-0 w-full z-50 bg-[var(--card)] border border-[var(--border)] rounded-xl overflow-hidden animate-fade-in-scale"
-          style={{ boxShadow: 'var(--shadow-lg)' }}
-        >
-          <div className="max-h-52 overflow-y-auto py-1">
-            {options.map(option => {
-              const isSelected = option.value === value;
-              return (
-                <button
-                  type="button"
-                  key={option.value}
-                  onClick={() => {
-                    onChange(option.value);
-                    setIsOpen(false);
-                  }}
-                  className={clsx(
-                    'w-full flex items-center justify-between px-3.5 py-2 text-xs text-left transition-colors cursor-pointer',
-                    isSelected
-                      ? 'bg-red-500/8 text-red-500 font-semibold'
-                      : 'text-[var(--foreground)] hover:bg-[var(--muted-bg)]'
-                  )}
-                >
-                  <div className="flex items-center gap-2 truncate">
-                    {option.icon && (
-                      <FolderIcon
-                        icon={option.icon}
-                        className={clsx('text-sm flex-shrink-0', isSelected ? 'text-red-500' : 'text-[var(--muted)]')}
-                      />
+      {/* Options Dropdown rendered in Portal */}
+      {isOpen &&
+        menuPos.ready &&
+        createPortal(
+          <div
+            ref={menuRef}
+            style={{
+              position: 'fixed',
+              top: `${menuPos.top}px`,
+              left: `${menuPos.left}px`,
+              width: `${menuPos.width}px`,
+              zIndex: 99999,
+              boxShadow: 'var(--shadow-lg)',
+            }}
+            className="bg-[var(--card)] border border-[var(--border)] rounded-xl overflow-hidden animate-fade-in-scale select-none"
+          >
+            <div className="max-h-52 overflow-y-auto py-1">
+              {options.map(option => {
+                const isSelected = option.value === value;
+                return (
+                  <button
+                    type="button"
+                    key={option.value}
+                    onClick={() => {
+                      onChange(option.value);
+                      setIsOpen(false);
+                    }}
+                    className={clsx(
+                      'w-full flex items-center justify-between px-3.5 py-2 text-xs text-left transition-colors cursor-pointer',
+                      isSelected
+                        ? 'bg-red-500/8 text-red-500 font-semibold'
+                        : 'text-[var(--foreground)] hover:bg-[var(--muted-bg)]'
                     )}
-                    <div className="flex flex-col min-w-0 text-left">
-                      <div className="flex items-center gap-1.5">
-                        <span className="font-medium truncate">{option.label}</span>
-                        {option.badge && (
-                          <span className="text-[9.5px] font-mono px-1 py-0.2 rounded bg-[var(--muted-bg)] text-[var(--muted-fg)] border border-[var(--border)] leading-tight">
-                            {option.badge}
+                  >
+                    <div className="flex items-center gap-2 truncate">
+                      {option.icon && (
+                        <FolderIcon
+                          icon={option.icon}
+                          className={clsx(
+                            'text-sm flex-shrink-0',
+                            isSelected ? 'text-red-500' : 'text-[var(--muted)]'
+                          )}
+                        />
+                      )}
+                      <div className="flex flex-col min-w-0 text-left">
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-medium truncate">{option.label}</span>
+                          {option.badge && (
+                            <span className="text-[9.5px] font-mono px-1 py-0.2 rounded bg-[var(--muted-bg)] text-[var(--muted-fg)] border border-[var(--border)] leading-tight">
+                              {option.badge}
+                            </span>
+                          )}
+                        </div>
+                        {option.description && (
+                          <span className="text-[10.5px] text-[var(--muted)] truncate font-mono">
+                            {option.description}
                           </span>
                         )}
                       </div>
-                      {option.description && (
-                        <span className="text-[10.5px] text-[var(--muted)] truncate font-mono">
-                          {option.description}
-                        </span>
-                      )}
                     </div>
-                  </div>
-                  {isSelected && (
-                    <i className="ri-check-line text-red-500 text-sm flex-shrink-0 ml-2" />
-                  )}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      )}
+                    {isSelected && (
+                      <i className="ri-check-line text-red-500 text-sm flex-shrink-0 ml-2" />
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>,
+          document.body
+        )}
     </div>
   );
 };

@@ -1,4 +1,4 @@
-export type DependencyId = 'wsl' | 'docker' | 'binder' | 'redroid' | 'adb' | 'scrcpy';
+export type DependencyId = 'wsl' | 'docker' | 'binder' | 'redroid' | 'adb' | 'scrcpy' | 'camoufox';
 
 export type DependencyStatus = 'ok' | 'outdated' | 'missing' | 'checking' | 'installing' | 'error';
 
@@ -13,6 +13,36 @@ export interface DependencyItem {
   log?: string;
   required: boolean;
   actionLabel?: string;
+}
+
+export interface CamoufoxStatus {
+  installed: boolean;
+  isOk?: boolean;
+  version?: string;
+  release?: string;
+  path?: string;
+  installDir: string;
+  missingGeoIP?: boolean;
+}
+
+export type CamoufoxInstallStage =
+  | 'checking'
+  | 'downloading_browser'
+  | 'extracting_browser'
+  | 'permissions'
+  | 'downloading_geoip'
+  | 'downloading_addons'
+  | 'completed'
+  | 'error';
+
+export interface CamoufoxInstallProgress {
+  stage: CamoufoxInstallStage;
+  percent: number;
+  downloadedBytes?: number;
+  totalBytes?: number;
+  speed?: string;
+  message: string;
+  error?: string;
 }
 
 export interface SystemDiagnosticResult {

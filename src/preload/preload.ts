@@ -53,6 +53,7 @@ const geenjutsuApi = {
   stopWarmup: (profileId: string) => ipcRenderer.invoke('warmup:stop', profileId),
   getWarmupStatus: (profileId: string) => ipcRenderer.invoke('warmup:get-status', profileId),
   getRunningWarmups: () => ipcRenderer.invoke('warmup:get-running'),
+  getWarmupQueue: () => ipcRenderer.invoke('warmup:get-queue'),
   saveWarmupConfig: (profileId: string, config: any) =>
     ipcRenderer.invoke('warmup:save-config', { profileId, config }),
 
@@ -70,6 +71,8 @@ const geenjutsuApi = {
     ipcRenderer.invoke('tables:update-column', { columnId, updates }),
   deleteColumn: (columnId: string, tableId: string) =>
     ipcRenderer.invoke('tables:delete-column', { columnId, tableId }),
+  reorderColumns: (tableId: string, columnIds: string[]) =>
+    ipcRenderer.invoke('tables:reorder-columns', { tableId, columnIds }),
   addRow: (tableId: string, data?: Record<string, any>) =>
     ipcRenderer.invoke('tables:add-row', { tableId, data }),
   updateRow: (rowId: string, data: Record<string, any>) =>
@@ -78,6 +81,25 @@ const geenjutsuApi = {
   reorderRows: (tableId: string, rowIds: string[]) =>
     ipcRenderer.invoke('tables:reorder-rows', { tableId, rowIds }),
   getTableTemplates: () => ipcRenderer.invoke('tables:get-templates'),
+
+  // Integrations & Proxy Seller API (SQLite Engine)
+  getIntegrations: () => ipcRenderer.invoke('integrations:get-all'),
+  getIntegration: (serviceId: string) => ipcRenderer.invoke('integrations:get-by-id', serviceId),
+  saveIntegration: (payload: { serviceId: string; apiKey: string; status?: string; cachedBalance?: number; cachedData?: any; settings?: any }) =>
+    ipcRenderer.invoke('integrations:save', payload),
+  deleteIntegration: (serviceId: string) => ipcRenderer.invoke('integrations:delete', serviceId),
+
+  // Proxy Seller Actions
+  testProxySellerConnection: (apiKey: string) => ipcRenderer.invoke('proxy-seller:test-connection', apiKey),
+  getProxySellerBalance: (apiKey?: string) => ipcRenderer.invoke('proxy-seller:get-balance', apiKey),
+  getProxySellerResidentialInfo: (apiKey?: string) => ipcRenderer.invoke('proxy-seller:get-residential-info', apiKey),
+  updateProxySellerRotation: (listId: number, rotationSeconds: number, apiKey?: string) =>
+    ipcRenderer.invoke('proxy-seller:update-rotation', { listId, rotationSeconds, apiKey }),
+  getProxySellerIspProxies: (apiKey?: string) => ipcRenderer.invoke('proxy-seller:get-isp-proxies', apiKey),
+  buyProxySellerProxy: (params: any, apiKey?: string) => ipcRenderer.invoke('proxy-seller:buy-proxy', { params, apiKey }),
+  getProxySellerReferenceList: (type?: string, apiKey?: string) => ipcRenderer.invoke('proxy-seller:get-reference-list', { type, apiKey }),
+  calculateProxySellerOrder: (params: any, apiKey?: string) => ipcRenderer.invoke('proxy-seller:calculate-order', { params, apiKey }),
+  checkProxySellerCard: (apiKey?: string) => ipcRenderer.invoke('proxy-seller:check-card', apiKey),
 
   // Event Listeners from Main Process
   onProfileStatusChange: (callback: (data: { profileId: string; status: 'idle' | 'running' | 'launching' }) => void) => {
@@ -112,6 +134,14 @@ const geenjutsuApi = {
     };
   },
 
+  onWarmupQueueChanged: (callback: (data: any) => void) => {
+    const handler = (_: any, data: any) => callback(data);
+    ipcRenderer.on('profile:warmup-queue-changed', handler);
+    return () => {
+      ipcRenderer.removeListener('profile:warmup-queue-changed', handler);
+    };
+  },
+
   onAutomationStateChange: (callback: (data: any) => void) => {
     const handler = (_: any, data: any) => callback(data);
     ipcRenderer.on('automation:state-changed', handler);
@@ -141,6 +171,26 @@ const geenjutsuApi = {
     ipcRenderer.on('app:request-close', handler);
     return () => {
       ipcRenderer.removeListener('app:request-close', handler);
+    };
+  },
+
+  // Camoufox Engine Operations & Auto-Installer
+  checkCamoufoxStatus: () => ipcRenderer.invoke('camoufox:check-status'),
+  installCamoufox: () => ipcRenderer.invoke('camoufox:install'),
+  cancelCamoufoxInstall: () => ipcRenderer.invoke('camoufox:cancel-install'),
+  onCamoufoxInstallProgress: (callback: (data: {
+    stage: 'checking' | 'downloading_browser' | 'extracting_browser' | 'permissions' | 'downloading_geoip' | 'downloading_addons' | 'completed' | 'error';
+    percent: number;
+    downloadedBytes?: number;
+    totalBytes?: number;
+    speed?: string;
+    message: string;
+    error?: string;
+  }) => void) => {
+    const handler = (_: any, data: any) => callback(data);
+    ipcRenderer.on('camoufox:install-progress', handler);
+    return () => {
+      ipcRenderer.removeListener('camoufox:install-progress', handler);
     };
   },
 

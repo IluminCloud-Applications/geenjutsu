@@ -18,7 +18,8 @@
     "**/*.node",
     "dist-electron/camoufoxWorker.mjs",
     "public/bin/**/*",
-    "public/*.apk"
+    "public/*.apk",
+    "node_modules/**/*"
   ],
   "win": {
     "target": [

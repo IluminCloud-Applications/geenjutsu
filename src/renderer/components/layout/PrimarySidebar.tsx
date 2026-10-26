@@ -25,6 +25,7 @@ export const PrimarySidebar: React.FC = () => {
     { id: 'proxies', label: t.tabs.proxies, icon: 'ri-shield-keyhole-line' },
     { id: 'automations', label: t.tabs.automations, icon: 'ri-terminal-box-line' },
     { id: 'tables', label: t.tabs.tables, icon: 'ri-table-line' },
+    { id: 'integrations', label: (t.tabs as any).integrations || 'Integrações', icon: 'ri-puzzle-line' },
     { id: 'referral', label: t.tabs.referral, icon: 'ri-group-line' },
   ];
 

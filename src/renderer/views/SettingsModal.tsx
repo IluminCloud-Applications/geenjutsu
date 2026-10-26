@@ -6,7 +6,7 @@ import { AppIcon, BrandTextLogo } from '../components/ui/BrandLogo';
 import { useProfiles } from '../context/ProfileContext';
 import { useI18n } from '../context/I18nContext';
 import { useTheme } from '../context/ThemeContext';
-import { Locale, ThemeMode, CloseAction } from '../../types';
+import { Locale, ThemeMode, CloseAction, CamoufoxStatus } from '../../types';
 import { openExternalLink, SUPPORT_PROJECT_URL } from '../utils/externalLinks';
 
 export const SettingsModal: React.FC = () => {
@@ -20,12 +20,42 @@ export const SettingsModal: React.FC = () => {
     updateData,
     setIsUpdateModalOpen,
     checkForUpdates,
+    setIsCamoufoxInstallModalOpen,
   } = useProfiles();
   const { locale, setLocale, t } = useI18n();
   const { theme, setTheme } = useTheme();
 
   const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
   const [checkFeedback, setCheckFeedback] = useState<string | null>(null);
+  const [camoufoxStatus, setCamoufoxStatus] = useState<CamoufoxStatus | null>(null);
+  const [isCheckingMotor, setIsCheckingMotor] = useState(false);
+  const [motorFeedback, setMotorFeedback] = useState<string | null>(null);
+
+  const checkMotorStatus = React.useCallback(async () => {
+    if (!window.geenjutsuApi?.checkCamoufoxStatus) return;
+    setIsCheckingMotor(true);
+    try {
+      const status = await window.geenjutsuApi.checkCamoufoxStatus();
+      setCamoufoxStatus(status);
+      if (status?.installed) {
+        setMotorFeedback('OK');
+      } else {
+        setMotorFeedback('Ausente');
+      }
+      setTimeout(() => setMotorFeedback(null), 2500);
+    } catch {
+      setMotorFeedback('Erro');
+      setTimeout(() => setMotorFeedback(null), 2500);
+    } finally {
+      setIsCheckingMotor(false);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    if (isSettingsModalOpen) {
+      checkMotorStatus();
+    }
+  }, [isSettingsModalOpen, checkMotorStatus]);
 
   const handleCheckUpdate = async () => {
     setIsCheckingUpdate(true);
@@ -209,6 +239,95 @@ export const SettingsModal: React.FC = () => {
                 <span>{item.label}</span>
               </button>
             ))}
+          </div>
+        </div>
+
+        {/* Anti-Detect Browser Engine */}
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <label className="text-xs font-medium text-[var(--muted-fg)] select-none">
+              Motor Anti-Detect
+            </label>
+            {isCheckingMotor ? (
+              <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium bg-blue-500/10 text-blue-500 border border-blue-500/20">
+                <i className="ri-loader-4-line animate-spin text-[10px]" />
+                Verificando...
+              </span>
+            ) : camoufoxStatus?.installed ? (
+              <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium bg-emerald-500/10 text-emerald-500 border border-emerald-500/20">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                Motor OK
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium bg-amber-500/10 text-amber-500 border border-amber-500/20">
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                Não instalado
+              </span>
+            )}
+          </div>
+
+          <div className="flex items-center justify-between p-3 rounded-xl border border-[var(--border)] bg-[var(--sidebar-primary)]">
+            <div className="flex items-center gap-2.5">
+              <i
+                className={clsx(
+                  camoufoxStatus?.installed
+                    ? 'ri-shield-check-fill text-emerald-500'
+                    : 'ri-alert-fill text-amber-500',
+                  'text-base'
+                )}
+              />
+              <div className="flex flex-col">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-semibold text-[var(--foreground)]">
+                    Motor Anti-Detect
+                  </span>
+                  {camoufoxStatus?.installed ? (
+                    <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/10 text-emerald-500 border border-emerald-500/20 leading-none">
+                      OK
+                    </span>
+                  ) : (
+                    <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-500/10 text-amber-500 border border-amber-500/20 leading-none">
+                      Pendente
+                    </span>
+                  )}
+                </div>
+                <span className="text-[11px] text-[var(--muted)]">
+                  {isCheckingMotor
+                    ? 'Verificando integridade no computador...'
+                    : camoufoxStatus?.installed
+                    ? `${camoufoxStatus.version ? `${camoufoxStatus.version} • ` : ''}Pronto e operacional no computador`
+                    : 'Não instalado no computador • Download necessário para abrir perfis'}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={checkMotorStatus}
+                disabled={isCheckingMotor}
+                title="Verificar se o motor está OK no computador"
+                className="text-xs text-[var(--muted)] hover:text-[var(--foreground)]"
+              >
+                <i className={clsx(isCheckingMotor ? 'ri-loader-4-line animate-spin' : 'ri-refresh-line', 'text-xs mr-1')} />
+                <span>{motorFeedback || 'Verificar'}</span>
+              </Button>
+
+              <Button
+                type="button"
+                variant={camoufoxStatus?.installed ? 'secondary' : 'primary'}
+                size="sm"
+                onClick={() => {
+                  setIsSettingsModalOpen(false);
+                  setIsCamoufoxInstallModalOpen(true);
+                }}
+              >
+                <i className={clsx(camoufoxStatus?.installed ? 'ri-refresh-line' : 'ri-download-cloud-line', 'text-xs mr-1')} />
+                <span>{camoufoxStatus?.installed ? 'Reinstalar' : 'Instalar Motor'}</span>
+              </Button>
+            </div>
           </div>
         </div>
 

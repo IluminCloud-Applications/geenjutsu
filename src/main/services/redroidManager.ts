@@ -4,16 +4,19 @@ import fs from 'fs';
 import path from 'path';
 import http from 'http';
 import net from 'net';
-import { fileURLToPath } from 'url';
 import { app, net as electronNet } from 'electron';
 import os from 'os';
 import { SocksClient } from 'socks';
 import { Profile } from '../../types';
 import { DataStore } from './dataStore';
-import { GpuSpoofer } from './gpuSpoofer';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import { AndroidFingerprintService } from './androidFingerprintService';
+import {
+  ANDROID_STEALTH_CONFIG,
+  generateSamsungMac,
+  generateSamsungSerial,
+  generateAndroidId,
+  generateLuhnImei,
+} from '../../shared/androidConfig';
 
 interface ProxyForwarder {
   port: number;
@@ -99,9 +102,6 @@ export class RedroidManager {
   private static getDockerBinderFlags(): string {
     if (process.platform !== 'linux') return '';
 
-    // Se o host possui binderfs (/dev/binderfs), o Redroid com --privileged
-    // monta nativamente seu próprio binderfs dentro do container.
-    // Injetar os nós via --device quebra o namespace e impede a inicialização do SurfaceFlinger/Zygote (ENXIO).
     if (fs.existsSync('/dev/binderfs')) {
       return '';
     }
@@ -124,26 +124,35 @@ export class RedroidManager {
     return flags.join(' ');
   }
 
-  static async getAvailableRedroidImage(preferredVersion?: string): Promise<string> {
-    const { stdout, code } = await this.execAsync(
-      'docker images --format "{{.Repository}}:{{.Tag}}" | grep "^redroid/redroid:"'
-    );
-    if (code === 0 && stdout) {
-      const tags = stdout
-        .split('\n')
-        .map(l => l.trim().replace(/^redroid\/redroid:/, ''))
-        .filter(Boolean);
-
-      if (preferredVersion) {
-        const major = preferredVersion.split('.')[0];
-        const matched = tags.find(t => t.startsWith(`${major}.`));
-        if (matched) return matched;
-      }
-
-      const stable = tags.find(t => t.includes('12.0.0')) || tags[0];
-      if (stable) return stable;
+  /**
+   * Resolve inteligentemente a imagem Android Stealth própria:
+   * 1. Imagem no GHCR versão específica tag 1.0 (local ou pull)
+   * 2. Imagem no GHCR versão latest
+   * 3. Imagem local compilada (geenjutsu/android12-camoufox:latest)
+   */
+  private static async resolveStealthImage(): Promise<string> {
+    const ghcrCheck = await this.execAsync(`docker image inspect ${ANDROID_STEALTH_CONFIG.REMOTE_IMAGE}`);
+    if (ghcrCheck.code === 0) {
+      return ANDROID_STEALTH_CONFIG.REMOTE_IMAGE;
     }
-    return '12.0.0-latest';
+
+    const ghcrLatestCheck = await this.execAsync(`docker image inspect ${ANDROID_STEALTH_CONFIG.REMOTE_IMAGE_LATEST}`);
+    if (ghcrLatestCheck.code === 0) {
+      return ANDROID_STEALTH_CONFIG.REMOTE_IMAGE_LATEST;
+    }
+
+    const localCheck = await this.execAsync(`docker image inspect ${ANDROID_STEALTH_CONFIG.LOCAL_IMAGE}`);
+    if (localCheck.code === 0) {
+      return ANDROID_STEALTH_CONFIG.LOCAL_IMAGE;
+    }
+
+    console.log(`[RedroidManager] Baixando imagem Android Stealth do GHCR (${ANDROID_STEALTH_CONFIG.REMOTE_IMAGE})...`);
+    const pullResult = await this.execAsync(`docker pull ${ANDROID_STEALTH_CONFIG.REMOTE_IMAGE}`, 300000);
+    if (pullResult.code === 0) {
+      return ANDROID_STEALTH_CONFIG.REMOTE_IMAGE;
+    }
+
+    return ANDROID_STEALTH_CONFIG.LOCAL_IMAGE;
   }
 
   static async launchProfile(profile: Profile): Promise<{ success: boolean; error?: string; adbPort?: number }> {
@@ -154,7 +163,7 @@ export class RedroidManager {
       const containerName = `geenjutsu-android-${profileId}`;
       const volumeName = `geenjutsu-android-data-${profileId}`;
 
-      // Calculate or assign port
+      // Calcula ou atribui a porta ADB isolada para este perfil
       let adbPort = profile.adbPort;
       if (!adbPort || adbPort < 1024) {
         let hash = 0;
@@ -186,181 +195,114 @@ export class RedroidManager {
         }
       }
 
-      // Se já existe um container para esse perfil, removemos o container para garantir que
-      // todas as propriedades antidetect e parâmetros de proxy atualizados sejam aplicados no docker run.
-      // Os dados, apps e contas ficam 100% preservados dentro do volume Docker named.
+      // Se já existe um container para esse perfil, remove o container existente para recriar
+      // com as flags e portas atualizadas (o volume nomeado /data persiste 100% dos apps e dados)
       const inspectCheck = await this.execAsync(`docker inspect ${containerName}`);
       if (inspectCheck.code === 0) {
         await this.execAsync(`docker rm -f ${containerName}`);
       }
 
-      const width = profile.width || profile.device?.width || 1080;
-      const height = profile.height || profile.device?.height || 2400;
-      const dpi = profile.dpi || profile.device?.dpi || 420;
-      const device = profile.device;
+      const stealthImage = await this.resolveStealthImage();
+      const width = profile.width || ANDROID_STEALTH_CONFIG.DEVICE.width;
+      const height = profile.height || ANDROID_STEALTH_CONFIG.DEVICE.height;
+      const dpi = profile.dpi || ANDROID_STEALTH_CONFIG.DEVICE.dpi;
 
-      const brand = device?.brand || 'Samsung';
-      const model = device?.model || 'SM-S901B';
-      const devName = device?.device || 'r0s';
-      const board = device?.board || 'exynos2200';
-      let fingerprint = device?.fingerprint || 'samsung/r0sxxx/r0s:12/SP1A.210812.016/S901BXXU1AVA7:user/release-keys';
-      const patch = device?.securityPatch || '2023-08-01';
-
-      const redroidTag = await this.getAvailableRedroidImage(profile.androidVersion);
-      console.log(`[RedroidManager] Iniciando container Android para "${profile.name}" usando imagem redroid/redroid:${redroidTag}`);
-
-      // Garante coerência entre a versão do Android do container e a fingerprint
-      // Evita mismatch fatal detectado por algoritmos antifraude (Instagram/Meta/Play Integrity)
-      if (redroidTag.startsWith('12.') && !fingerprint.includes(':12/')) {
-        fingerprint = fingerprint.replace(/:\d+\//, ':12/');
-      } else if (redroidTag.startsWith('14.') && !fingerprint.includes(':14/')) {
-        fingerprint = fingerprint.replace(/:\d+\//, ':14/');
-      }
-
-      // Gera um Serial Number de hardware único e determinístico baseado no ID do perfil
-      const serialNumber = this.resolveSerialNumber(profile);
-
-      // Garante MAC Address fixo e determinístico
+      // Garante MAC Address autêntico Samsung exclusivo e determinístico por perfil
       let macAddress = profile.macAddress;
       if (!macAddress) {
-        macAddress = this.generateDeterministicMac(profileId);
+        macAddress = generateSamsungMac(profileId);
         profile.macAddress = macAddress;
-        try {
-          const storeData = DataStore.read();
-          const updated = (storeData.profiles || []).map((p: any) =>
-            p.id === profile.id ? { ...p, macAddress } : p
-          );
-          DataStore.write({ profiles: updated });
-        } catch {}
       }
 
-      const proxyArgs = proxyForwarder
-        ? [
-            'androidboot.redroid_net_proxy_type=static',
-            'androidboot.redroid_net_proxy_host=172.17.0.1',
-            `androidboot.redroid_net_proxy_port=${proxyForwarder.port}`,
-          ]
-        : [];
+      // Garante Serial Number oficial Samsung exclusivo por perfil
+      let serialNumber = (profile as any).serialNumber || profile.device?.serialNumber;
+      if (!serialNumber) {
+        serialNumber = generateSamsungSerial(profileId);
+        (profile as any).serialNumber = serialNumber;
+      }
 
+      // Garante Android ID único por perfil
+      let androidId = profile.androidId;
+      if (!androidId) {
+        androidId = generateAndroidId(profileId);
+        profile.androidId = androidId;
+      }
+
+      // Garante IMEI único com algoritmo Luhn por perfil
+      let imei = (profile as any).imei || profile.device?.imei;
+      if (!imei) {
+        imei = generateLuhnImei('35407215');
+        (profile as any).imei = imei;
+      }
+
+      // Sincroniza identificadores gerados no DataStore
+      try {
+        const storeData = DataStore.read();
+        const updated = (storeData.profiles || []).map((p: any) =>
+          p.id === profile.id
+            ? { ...p, macAddress, serialNumber, androidId, imei }
+            : p
+        );
+        DataStore.write({ profiles: updated });
+      } catch {}
+
+      // Configuração de GPU do host (utiliza aceleração nativa via render node do host)
       const gpuArgs = this.getGpuArgs();
 
-      // Prepara e monta as bibliotecas de GPU spoofadas diretamente no boot do container Android.
-      // O SurfaceFlinger e o Zygote sobem nativamente com a GPU do celular especificada no catálogo
-      // (ex: Mali-G78, Adreno 750), garantindo 60 FPS de aceleração de hardware sem vazamento do PC
-      // e sem reinicializações que causavam tela preta e quebra no scrcpy.
-      const baseMesaPath = this.getPublicBinaryPath('libGLESv2_mesa.so');
-      const baseGles2Path = this.getPublicBinaryPath('libGLESv2.so');
-      const gpuVolumeArgs: string[] = [];
-      const overridesDir = this.getGpuOverridesDir(profileId);
-      const spoofedGpu = GpuSpoofer.prepareProfileGpuOverrides(profile, baseMesaPath, baseGles2Path, overridesDir);
-      if (spoofedGpu) {
-        if (spoofedGpu.mesaPath && gpuArgs.length > 0) {
-          gpuVolumeArgs.push(`-v ${spoofedGpu.mesaPath}:/vendor/lib64/egl/libGLESv2_mesa.so:ro`);
-        }
-        if (spoofedGpu.gles2Path) {
-          gpuVolumeArgs.push(`-v ${spoofedGpu.gles2Path}:/system/lib64/libGLESv2.so:ro`);
-        }
-        const identity = GpuSpoofer.resolveGpuIdentity(profile.device);
-        console.log(`[RedroidManager] GPU Spoofing configurado no boot para "${profile.name}": ${identity.vendor} ${identity.renderer} (${identity.version})`);
+      // Configuração de proxy transparente (secnetd) e de sistema
+      const proxyBootArgs: string[] = [];
+      if (proxyForwarder) {
+        proxyBootArgs.push(
+          'androidboot.redroid_net_proxy_type=static',
+          'androidboot.redroid_net_proxy_host=172.17.0.1',
+          `androidboot.redroid_net_proxy_port=${proxyForwarder.port}`,
+          `androidboot.proxy_url=http://172.17.0.1:${proxyForwarder.port}`
+        );
+      } else if (hasProxy && proxyConfig) {
+        const host = proxyConfig.host || (proxyConfig.ipDisplay ? proxyConfig.ipDisplay.split(':')[0] : '');
+        const port = proxyConfig.port || (proxyConfig.ipDisplay ? proxyConfig.ipDisplay.split(':')[1] : '1080');
+        const userPass = proxyConfig.username ? `${encodeURIComponent(proxyConfig.username)}:${encodeURIComponent(proxyConfig.password || '')}@` : '';
+        const proto = (proxyConfig.type || 'socks5').toLowerCase();
+        proxyBootArgs.push(`androidboot.proxy_url=${proto}://${userPass}${host}:${port}`);
       }
+
+      const timezone = this.resolveTimezone(profile);
+
+      // Identidade única injetada no container (recebida pelo device_init early)
+      const customBootArgs = [
+        `androidboot.custom_serial=${serialNumber}`,
+        `androidboot.custom_android_id=${androidId}`,
+        `androidboot.custom_imei=${imei}`,
+        `androidboot.custom_timezone=${timezone}`,
+      ];
+
+      const driFlag = fs.existsSync('/dev/dri') ? '--device /dev/dri:/dev/dri' : '';
 
       const dockerCmd = [
         'docker run -d',
         `--name ${containerName}`,
         '--privileged',
         this.getDockerBinderFlags(),
+        driFlag,
         `-v ${volumeName}:/data`,
-        ...gpuVolumeArgs,
         `-p ${adbPort}:5555`,
         `--mac-address ${macAddress}`,
-        `--shm-size=1g`,
-        `redroid/redroid:${redroidTag}`,
+        '--shm-size=1g',
+        stealthImage,
         `androidboot.redroid_width=${width}`,
         `androidboot.redroid_height=${height}`,
         `androidboot.redroid_dpi=${dpi}`,
-        `androidboot.redroid_fps=60`,
-        ...gpuArgs,
-        ...proxyArgs,
-
-        // Identificadores de Hardware e Fingerprint Realistas
-        `ro.serialno=${serialNumber}`,
-        `ro.boot.serialno=${serialNumber}`,
-        `androidboot.serialno=${serialNumber}`,
-        `ro.product.brand=${brand}`,
-        `ro.product.manufacturer=${brand}`,
-        `ro.product.model=${model}`,
-        `ro.product.name=${devName}`,
-        `ro.product.device=${devName}`,
-        // Com GPU host, o init do Redroid depende de ro.hardware=redroid para configurar gralloc/hwcomposer no boot.
-        // Nesse caso, board/hardware são aplicados somente depois do boot via resetprop.
-        ...(gpuArgs.length ? [] : [`ro.product.board=${board}`, `ro.hardware=${board}`, `ro.boot.hardware=${board}`]),
-        // Os HALs gráficos do Redroid são hwcomposer.redroid.so / gralloc.redroid.so.
-        // Sem estes overrides, o hw_get_module procura por "<board>" e o SurfaceFlinger nunca sobe (boot infinito).
-        // Em modo GPU host o Redroid usa gralloc=gbm/hwcomposer=drm: sobrescrever quebra a alocação de buffers (tela preta).
-        ...(gpuArgs.length ? [] : ['ro.hardware.hwcomposer=redroid', 'ro.hardware.gralloc=redroid']),
-
-        // Blindagem de Partições (Remove qualquer resquício de redroid em system, vendor, odm, product)
-        `ro.product.system.brand=${brand}`,
-        `ro.product.system.manufacturer=${brand}`,
-        `ro.product.system.model=${model}`,
-        `ro.product.system.device=${devName}`,
-        `ro.product.system.name=${devName}`,
-
-        `ro.product.vendor.brand=${brand}`,
-        `ro.product.vendor.manufacturer=${brand}`,
-        `ro.product.vendor.model=${model}`,
-        `ro.product.vendor.device=${devName}`,
-        `ro.product.vendor.name=${devName}`,
-
-        `ro.product.odm.brand=${brand}`,
-        `ro.product.odm.manufacturer=${brand}`,
-        `ro.product.odm.model=${model}`,
-        `ro.product.odm.device=${devName}`,
-        `ro.product.odm.name=${devName}`,
-
-        `ro.product.product.brand=${brand}`,
-        `ro.product.product.manufacturer=${brand}`,
-        `ro.product.product.model=${model}`,
-        `ro.product.product.device=${devName}`,
-        `ro.product.product.name=${devName}`,
-
-        `ro.product.system_ext.brand=${brand}`,
-        `ro.product.system_ext.manufacturer=${brand}`,
-        `ro.product.system_ext.model=${model}`,
-        `ro.product.system_ext.device=${devName}`,
-        `ro.product.system_ext.name=${devName}`,
-
-        `ro.product.vendor_dlkm.brand=${brand}`,
-        `ro.product.vendor_dlkm.manufacturer=${brand}`,
-        `ro.product.vendor_dlkm.model=${model}`,
-        `ro.product.vendor_dlkm.device=${devName}`,
-        `ro.product.vendor_dlkm.name=${devName}`,
-        `ro.vendor_dlkm.build.fingerprint=${fingerprint}`,
-
-        // Fingerprints uniformes em todas as partições
-        `ro.build.display.id=${fingerprint}`,
-        `ro.build.fingerprint=${fingerprint}`,
-        `ro.system.build.fingerprint=${fingerprint}`,
-        `ro.vendor.build.fingerprint=${fingerprint}`,
-        `ro.odm.build.fingerprint=${fingerprint}`,
-        `ro.product.build.fingerprint=${fingerprint}`,
-        `ro.system_ext.build.fingerprint=${fingerprint}`,
-
-        // Assinatura de build oficial de produção (release-keys em vez de test-keys)
-        'ro.build.tags=release-keys',
-        'ro.build.type=user',
-        `ro.build.flavor=${devName}-user`,
-        // O init do Redroid separa argumentos por espaço: a description não pode conter espaços
-        `ro.build.description=${devName}-user`,
-        `ro.build.product=${devName}`,
-        `ro.build.version.security_patch=${patch}`,
-        'ro.secure=0',
+        'androidboot.redroid_fps=60',
         'ro.adb.secure=0',
+        ...gpuArgs,
+        ...proxyBootArgs,
+        ...customBootArgs,
       ].filter(Boolean).join(' ');
 
+      console.log(`[RedroidManager] Iniciando container Android Stealth para "${profile.name}" (Imagem: ${stealthImage})...`);
       const runResult = await this.execAsync(dockerCmd);
       if (runResult.code !== 0) {
-        const errMsg = runResult.stderr || runResult.stdout || 'Falha ao iniciar container Redroid';
+        const errMsg = runResult.stderr || runResult.stdout || 'Falha ao iniciar container Android Stealth';
         console.error(`[RedroidManager] Erro no docker run para ${profile.name}:`, errMsg);
         if (proxyForwarder) proxyForwarder.close();
         this.emitter.emit('status_changed', { profileId, status: 'idle' });
@@ -378,10 +320,9 @@ export class RedroidManager {
         startedAt: Date.now(),
       };
       this.runningProfiles.set(profileId, runningInfo);
-      // Mantém 'launching' até a conclusão do boot do Android (sys.boot_completed = 1)
       this.emitter.emit('status_changed', { profileId, status: 'launching' });
 
-      // Async boot check and display launcher
+      // Inicialização assíncrona ultra-rápida (3 a 5 segundos)
       this.connectAdbAndLaunchDisplay(profile, adbPort, runningInfo).catch(err => {
         console.error('[RedroidManager] Erro no boot/scrcpy:', err);
       });
@@ -398,15 +339,14 @@ export class RedroidManager {
     adbPort: number,
     info: RunningContainerInfo
   ): Promise<void> {
-    const BOOT_DEADLINE_MS = 90000;
     const startedAt = Date.now();
     let booted = false;
 
-    // Verifica o boot via docker exec (não depende do ADB, que fica "offline" enquanto o Android sobe)
-    while (Date.now() - startedAt < BOOT_DEADLINE_MS) {
+    // 1. Aguarda sys.boot_completed=1 (com a imagem stealth agora leva apenas de 3 a 5 segundos)
+    while (Date.now() - startedAt < 35000) {
       const { stdout: psCheck } = await this.execAsync(
         `docker ps --filter "name=${info.containerId}" --format "{{.ID}}"`,
-        5000
+        3000
       );
       if (!psCheck) {
         console.error(`[RedroidManager] Container ${info.containerId} encerrou inesperadamente.`);
@@ -414,77 +354,109 @@ export class RedroidManager {
         return;
       }
 
-      const check = await this.execAsync(`docker exec ${info.containerId} getprop sys.boot_completed`, 5000);
+      const check = await this.execAsync(`docker exec ${info.containerId} getprop sys.boot_completed`, 2000);
       if (check.stdout.trim() === '1') {
         booted = true;
         break;
       }
-      await new Promise(r => setTimeout(r, 1000));
+      await new Promise(r => setTimeout(r, 400));
     }
 
     if (!booted) {
-      console.error(`[RedroidManager] Android não concluiu o boot em ${BOOT_DEADLINE_MS / 1000}s para ${profile.name}.`);
+      console.error(`[RedroidManager] Android timeout no boot para ${profile.name}`);
       await this.cleanupFailedLaunch(profile.id, info);
       return;
     }
 
-    console.log(`[RedroidManager] Boot do Android concluído com sucesso para ${profile.name}!`);
+    const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
+    console.log(`[RedroidManager] Boot do Android Stealth concluído em ${elapsed}s para ${profile.name}!`);
 
-    // Aplica blindagem 100% stealth das propriedades de hardware, partições e fingerprints via resetprop
-    await this.applyStealthProperties(profile, info.containerId);
+    // 2. Garante adbd ativo e injeta a chave de autenticação ADB do host (evita status offline/unauthorized)
+    await this.execAsync(
+      `docker exec ${info.containerId} sh -c "` +
+      `settings put global adb_enabled 1 2>/dev/null; ` +
+      `setprop persist.sys.usb.config adb; ` +
+      `setprop sys.usb.config adb; ` +
+      `setprop ctl.start adbd; ` +
+      `true"`,
+      5000
+    );
 
-    // Oculta binário su pré-instalado (Root check evasion)
-    await this.hideSuBinary(info.containerId);
-
-    // Remove rastros de Docker/Redroid e mascara /proc/cpuinfo (CPU do host)
-    await this.removeContainerTraces(info.containerId);
-    await this.applyCpuInfoMasking(profile, info.containerId);
-
-    // Mascaramento de /proc (cmdline, 1/cmdline, version, cpuinfo)
-    const serialNumber = this.resolveSerialNumber(profile);
-    await this.applyProcMasking(profile, info.containerId, serialNumber);
-
-    // Conecta ADB (com timeouts curtos para nunca travar a UI)
-    for (let i = 0; i < 10; i++) {
-      await this.execAsync(`adb connect localhost:${adbPort}`, 5000);
-      const state = await this.execAsync(`adb -s localhost:${adbPort} get-state`, 5000);
-      if (state.stdout.trim() === 'device') break;
-      await new Promise(r => setTimeout(r, 1000));
+    const hostAdbKey = path.join(os.homedir(), '.android', 'adbkey.pub');
+    if (fs.existsSync(hostAdbKey)) {
+      try {
+        await this.execAsync(`docker exec ${info.containerId} mkdir -p /data/misc/adb`, 3000);
+        await this.execAsync(`docker cp "${hostAdbKey}" ${info.containerId}:/data/misc/adb/adb_keys`, 3000);
+        await this.execAsync(
+          `docker exec ${info.containerId} sh -c "chmod 644 /data/misc/adb/adb_keys 2>/dev/null; chown system:shell /data/misc/adb/adb_keys 2>/dev/null; true"`,
+          3000
+        );
+      } catch {}
     }
 
-    // Persiste e sincroniza android_id único e permanente
-    await this.ensurePersistentAndroidId(profile, info.containerId);
+    // 3. Conecta ADB via IPv4 127.0.0.1 e aguarda estado estritamente 'device'
+    let adbReady = false;
+    for (let i = 0; i < 20; i++) {
+      await this.execAsync(`adb connect 127.0.0.1:${adbPort}`, 3000);
+      const stateCheck = await this.execAsync(`adb -s 127.0.0.1:${adbPort} get-state`, 2000);
+      const state = stateCheck.stdout.trim();
+      if (state === 'device') {
+        adbReady = true;
+        break;
+      }
+      if (state === 'offline' || state === 'unauthorized') {
+        await this.execAsync(`adb disconnect 127.0.0.1:${adbPort}`, 1000);
+        await this.execAsync(
+          `docker exec ${info.containerId} sh -c "settings put global adb_enabled 1 2>/dev/null; setprop ctl.restart adbd; true"`,
+          2000
+        );
+      }
+      await new Promise(r => setTimeout(r, 500));
+    }
 
-    // Configura bateria física realista (75-88%, descarregando, temperatura ambiente)
-    await this.applyBatterySpoofing(profile, info.containerId);
+    if (!adbReady) {
+      console.warn(`[RedroidManager] Tentativa final de redefinição de ADB para ${profile.name}...`);
+      await this.execAsync(`adb disconnect 127.0.0.1:${adbPort}`, 1000);
+      await this.execAsync(`docker exec ${info.containerId} setprop ctl.restart adbd`, 2000);
+      await new Promise(r => setTimeout(r, 1000));
+      await this.execAsync(`adb connect 127.0.0.1:${adbPort}`, 3000);
+    }
 
-    // Sempre sincroniza o proxy: aplica o atual ou limpa um proxy antigo persistido no volume
+    // 4. Fuso horário sincronizado
+    const timezone = this.resolveTimezone(profile);
+    await this.execAsync(`docker exec ${info.containerId} service call alarm 3 s16 ${timezone}`, 3000);
+
+    // 5. Proxy de sistema sincronizado e proteção contra WebRTC STUN Leak
     const proxyValue = info.proxyForwarder ? `172.17.0.1:${info.proxyForwarder.port}` : ':0';
-    await this.execAsync(`docker exec ${info.containerId} settings put global http_proxy ${proxyValue}`, 5000);
+    await this.execAsync(`docker exec ${info.containerId} settings put global http_proxy ${proxyValue}`, 3000);
     if (info.proxyForwarder) {
-      console.log(`[RedroidManager] Proxy global ativo no Android via ${proxyValue}`);
-      // Proteção contra WebRTC STUN Leak: neutraliza o vazamento do IP real da máquina
       await this.applyWebRtcLeakProtection(info.containerId);
     }
 
-    // Fuso horário coerente com o IP (container sobe em GMT por padrão — incoerência clássica para antifraude)
-    const timezone = this.resolveTimezone(profile);
-    await this.execAsync(`docker exec ${info.containerId} service call alarm 3 s16 ${timezone}`, 5000);
+    // 6. Garante android_id sincronizado
+    await this.ensurePersistentAndroidId(profile, info.containerId);
 
-    // Aguarda o subsistema de exibição (DisplayManager) ter o display padrão (mDisplayId=0) pronto
+    // 6.1 Injeta blindagem anti-detect única e persistente (Canvas, WebGL, WebGL Report, Visitor ID)
+    await AndroidFingerprintService.injectStealthScript(info.containerId, profile);
+
+    // 7. Aguarda o DisplayManager ter o display padrão (mDisplayId=0) pronto
     for (let i = 0; i < 20; i++) {
-      const dispCheck = await this.execAsync(`adb -s localhost:${adbPort} shell dumpsys display`, 3000);
+      const dispCheck = await this.execAsync(`adb -s 127.0.0.1:${adbPort} shell dumpsys display`, 2000);
       if (dispCheck.stdout.includes('mDisplayId=0')) break;
+      await new Promise(r => setTimeout(r, 300));
+    }
+
+    // 8. Garante confirmação final de conectividade ADB antes de abrir scrcpy
+    for (let i = 0; i < 5; i++) {
+      const finalState = await this.execAsync(`adb -s 127.0.0.1:${adbPort} get-state`, 2000);
+      if (finalState.stdout.trim() === 'device') break;
+      await this.execAsync(`adb disconnect 127.0.0.1:${adbPort}`, 1000);
+      await this.execAsync(`adb connect 127.0.0.1:${adbPort}`, 3000);
       await new Promise(r => setTimeout(r, 500));
     }
 
     this.emitter.emit('status_changed', { profileId: profile.id, status: 'running' });
     await this.spawnScrcpy(profile, adbPort, info);
-
-    // Instalação silenciosa em background dos APKs essenciais (Aurora Store e Via Browser) na primeira abertura
-    this.installInitialApksInBackground(adbPort).catch(err => {
-      console.warn('[RedroidManager] Aviso na verificação de APKs em background:', err);
-    });
   }
 
   private static resolveTimezone(profile: Profile): string {
@@ -512,80 +484,6 @@ export class RedroidManager {
     this.emitter.emit('status_changed', { profileId, status: 'idle' });
   }
 
-  private static getGpuOverridesDir(profileId: string): string {
-    let baseDir = '';
-    try {
-      if (app && typeof app.getPath === 'function') {
-        baseDir = path.join(app.getPath('userData'), 'gpu-overrides', profileId);
-      }
-    } catch {}
-    if (!baseDir) {
-      baseDir = path.join(os.homedir(), '.geenjutsu', 'gpu-overrides', profileId);
-    }
-    if (!fs.existsSync(baseDir)) {
-      fs.mkdirSync(baseDir, { recursive: true });
-    }
-    return baseDir;
-  }
-
-  private static getPublicBinaryPath(filename: string): string | null {
-    let appPath = '';
-    try {
-      if (app && typeof app.getAppPath === 'function') {
-        appPath = app.getAppPath();
-      }
-    } catch {}
-
-    const candidates = [
-      path.join(process.cwd(), 'public', 'bin', filename),
-      path.resolve('public', 'bin', filename),
-      path.join(__dirname, '../public/bin', filename),
-      path.join(__dirname, '../../public/bin', filename),
-      path.join(__dirname, '../../../public/bin', filename),
-      appPath ? path.join(appPath, 'public', 'bin', filename) : '',
-      process.resourcesPath ? path.join(process.resourcesPath, 'public', 'bin', filename) : '',
-      process.resourcesPath ? path.join(process.resourcesPath, 'bin', filename) : '',
-    ].filter(Boolean);
-
-    for (const c of candidates) {
-      if (fs.existsSync(c)) return c;
-    }
-    return null;
-  }
-
-  private static resolveSerialNumber(profile: Profile): string {
-    const profileId = profile.id;
-    const brand = profile.device?.brand || 'Samsung';
-    let serialHash = 0;
-    for (let i = 0; i < profileId.length; i++) {
-      serialHash = (serialHash * 31 + profileId.charCodeAt(i)) >>> 0;
-    }
-    const serialHex = serialHash.toString(16).toUpperCase().padStart(8, '0');
-    return brand.toLowerCase().includes('samsung')
-      ? `R58M${serialHex}`
-      : brand.toLowerCase().includes('google')
-      ? `1A${serialHex}`
-      : brand.toLowerCase().includes('motorola')
-      ? `ZY22${serialHex.slice(0, 6)}`
-      : `SN${serialHex}`;
-  }
-
-  private static generateDeterministicMac(profileId: string): string {
-    let hash1 = 0;
-    let hash2 = 0;
-    for (let i = 0; i < profileId.length; i++) {
-      hash1 = (hash1 * 31 + profileId.charCodeAt(i)) >>> 0;
-      hash2 = (hash2 * 17 + profileId.charCodeAt(i)) >>> 0;
-    }
-    const b1 = '02';
-    const b2 = (hash1 & 0xff).toString(16).padStart(2, '0');
-    const b3 = ((hash1 >> 8) & 0xff).toString(16).padStart(2, '0');
-    const b4 = ((hash1 >> 16) & 0xff).toString(16).padStart(2, '0');
-    const b5 = (hash2 & 0xff).toString(16).padStart(2, '0');
-    const b6 = ((hash2 >> 8) & 0xff).toString(16).padStart(2, '0');
-    return `${b1}:${b2}:${b3}:${b4}:${b5}:${b6}`.toLowerCase();
-  }
-
   private static async ensurePersistentAndroidId(profile: Profile, containerId: string): Promise<string> {
     try {
       if (profile.androidId) {
@@ -602,7 +500,6 @@ export class RedroidManager {
           p.id === profile.id ? { ...p, androidId: currentId } : p
         );
         DataStore.write({ profiles: updatedProfiles });
-        console.log(`[RedroidManager] android_id ${currentId} gravado e persistido para o perfil ${profile.name}`);
         return currentId;
       }
     } catch (err) {
@@ -611,29 +508,9 @@ export class RedroidManager {
     return '';
   }
 
-  private static async applyBatterySpoofing(profile: Profile, containerId: string): Promise<void> {
-    try {
-      let hash = 0;
-      for (let i = 0; i < profile.id.length; i++) {
-        hash = (hash * 13 + profile.id.charCodeAt(i)) >>> 0;
-      }
-      const batteryLevel = 72 + (hash % 18); // Entre 72% e 89%
-      const batteryTemp = 280 + (hash % 25); // 28.0°C a 30.4°C
-
-      // Executa em comando único e atômico definindo USB e Level ANTES de present=1.
-      // Se present=1 for executado isoladamente enquanto o nível ainda for 0%,
-      // o BatteryService do Android dispara shutdown imediato de bateria zerada desplugada.
-      const cmd = `dumpsys battery set usb 1 && dumpsys battery set level ${batteryLevel} && dumpsys battery set temp ${batteryTemp} && dumpsys battery set status 2 && dumpsys battery set present 1`;
-      await this.execAsync(`docker exec ${containerId} sh -c "${cmd}"`, 5000);
-      console.log(`[RedroidManager] Bateria realista configurada para ${profile.name}: ${batteryLevel}%, USB conectado, ${batteryTemp / 10}°C`);
-    } catch (err) {
-      console.warn('[RedroidManager] Aviso ao configurar bateria:', err);
-    }
-  }
-
   /**
    * Usa a GPU do host via Mesa quando disponível (AMD / Intel), garantindo fluidez e aceleração máxima de 60 FPS.
-   * O nome da placa do PC é 100% mascarado pelo applyGpuSpoofing (retornando a Mali ou Adreno do celular cadastrado).
+   * O nome da placa do PC é 100% mascarado (reportando Samsung Xclipse 920 nativo na imagem).
    */
   private static getGpuArgs(): string[] {
     if (process.platform !== 'linux') return [];
@@ -652,91 +529,7 @@ export class RedroidManager {
         }
       }
     } catch {}
-    return [];
-  }
-
-  private static async removeContainerTraces(containerId: string): Promise<void> {
-    try {
-      // Rastros clássicos de Docker/Redroid checados por detectores simples de arquivo
-      await this.execAsync(
-        `docker exec ${containerId} sh -c "rm -f /.dockerenv /vendor/bin/post-fs-data.redroid.sh /vendor/bin/*.redroid.sh /system/bin/*redroid* 2>/dev/null; true"`,
-        5000
-      );
-    } catch (err) {
-      console.warn('[RedroidManager] Aviso ao remover rastros do container:', err);
-    }
-  }
-
-  private static buildFakeCpuInfo(profile: Profile): string {
-    const board = profile.device?.board || 'exynos2100';
-    const features = 'fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm lrcpc dcpop asimddp';
-    // 1x Cortex-X1 + 3x Cortex-A78 + 4x Cortex-A55 (layout big.LITTLE comum em flagships)
-    const cores: Array<{ part: string; bogo: string }> = [
-      ...Array(4).fill({ part: '0xd05', bogo: '26.00' }),
-      ...Array(3).fill({ part: '0xd41', bogo: '26.00' }),
-      { part: '0xd44', bogo: '26.00' },
-    ];
-    const blocks = cores.map((c, i) =>
-      `processor\t: ${i}\nBogoMIPS\t: ${c.bogo}\nFeatures\t: ${features}\nCPU implementer\t: 0x41\nCPU architecture: 8\nCPU variant\t: 0x${c.part === '0xd05' ? '0' : '1'}\nCPU part\t: ${c.part}\nCPU revision\t: 0\n`
-    );
-    return blocks.join('\n') + `\nHardware\t: ${board}\n`;
-  }
-
-  private static async applyCpuInfoMasking(profile: Profile, containerId: string): Promise<void> {
-    try {
-      const tmpFile = path.join(os.tmpdir(), `geenjutsu-cpuinfo-${profile.id}`);
-      fs.writeFileSync(tmpFile, this.buildFakeCpuInfo(profile), 'utf8');
-      const stealthDir = '/data/system/.antidetect';
-      await this.execAsync(`docker exec ${containerId} mkdir -p ${stealthDir}`, 5000);
-      await this.execAsync(`docker cp "${tmpFile}" ${containerId}:${stealthDir}/cpuinfo`, 5000);
-      try { fs.unlinkSync(tmpFile); } catch {}
-      await this.execAsync(`docker exec ${containerId} chmod 644 ${stealthDir}/cpuinfo`, 5000);
-      await this.execAsync(`docker exec ${containerId} mount -o bind ${stealthDir}/cpuinfo /proc/cpuinfo`, 5000);
-    } catch (err) {
-      console.warn('[RedroidManager] Aviso ao mascarar /proc/cpuinfo:', err);
-    }
-  }
-
-  private static async hideSuBinary(containerId: string): Promise<void> {
-    try {
-      await this.execAsync(`docker exec ${containerId} sh -c "if [ -f /system/xbin/su ]; then mv /system/xbin/su /system/xbin/.su_backup; fi"`, 5000);
-    } catch (err) {
-      console.warn('[RedroidManager] Aviso ao ocultar binário su:', err);
-    }
-  }
-
-  private static async applyProcMasking(profile: Profile, containerId: string, serialNumber: string): Promise<void> {
-    try {
-      const dev = profile.device;
-      const board = dev?.board || 'bluejay';
-      const brand = dev?.brand || 'Google';
-      const isSamsung = brand.toLowerCase().includes('samsung');
-
-      const fakeKCmdline = `console=null stack_depot_disable=on cgroup_disable=pressure androidboot.hardware=${board} androidboot.serialno=${serialNumber} buildvariant=user`;
-      const fakeInitCmdline = '/system/bin/app_process64';
-      const fakeVersion = isSamsung
-        ? `Linux version 5.10.136-android12-9-24750181 (se-infra@samsung) (Android (8053312) clang 12.0.8) #1 SMP PREEMPT 2022`
-        : `Linux version 5.10.157-android12-9-00042-ab8500206 (android-build@google.com) (Android (8053312) clang 12.0.8) #1 SMP PREEMPT 2022`;
-
-      const stealthDir = '/data/system/.antidetect';
-      await this.execAsync(`docker exec ${containerId} mkdir -p ${stealthDir}`, 5000);
-      await this.execAsync(`docker exec ${containerId} chmod 700 ${stealthDir}`, 5000);
-
-      const escapedKCmdline = fakeKCmdline.replace(/"/g, '\\"');
-      const escapedInit = fakeInitCmdline.replace(/"/g, '\\"');
-      const escapedVer = fakeVersion.replace(/"/g, '\\"');
-
-      await this.execAsync(`docker exec ${containerId} sh -c "echo -n \\"${escapedKCmdline}\\" > ${stealthDir}/cmdline"`, 5000);
-      await this.execAsync(`docker exec ${containerId} sh -c "echo -n \\"${escapedInit}\\" > ${stealthDir}/init_cmdline"`, 5000);
-      await this.execAsync(`docker exec ${containerId} sh -c "echo -n \\"${escapedVer}\\" > ${stealthDir}/version"`, 5000);
-
-      await this.execAsync(`docker exec ${containerId} mount -o bind ${stealthDir}/cmdline /proc/cmdline`, 5000);
-      await this.execAsync(`docker exec ${containerId} mount -o bind ${stealthDir}/init_cmdline /proc/1/cmdline`, 5000);
-      await this.execAsync(`docker exec ${containerId} mount -o bind ${stealthDir}/version /proc/version`, 5000);
-      console.log(`[RedroidManager] Mascaramento de /proc e cmdline aplicado com sucesso para ${profile.name}`);
-    } catch (err) {
-      console.warn('[RedroidManager] Aviso ao aplicar mascaramento de /proc:', err);
-    }
+    return ['androidboot.redroid_gpu_mode=auto'];
   }
 
   private static async applyWebRtcLeakProtection(containerId: string): Promise<void> {
@@ -744,303 +537,25 @@ export class RedroidManager {
       console.log(`[RedroidManager] Aplicando blindagem contra WebRTC STUN Leak no container ${containerId}...`);
 
       // 1. Configura diretiva de privacidade anti-leak para Chromium e Android System WebView
-      // Impede requisições diretas de STUN via UDP fora da rota do proxy
-      const webviewFlags = '_ --webrtc-ip-handling-policy=disable_non_proxied_udp --force-webrtc-ip-handling-policy';
       await this.execAsync(
-        `docker exec ${containerId} sh -c "echo \\"${webviewFlags}\\" > /data/local/tmp/webview-command-line && chmod 777 /data/local/tmp/webview-command-line"`,
-        5000
-      );
-      await this.execAsync(
-        `docker exec ${containerId} sh -c "echo \\"${webviewFlags}\\" > /data/local/tmp/chrome-command-line && chmod 777 /data/local/tmp/chrome-command-line"`,
-        5000
+        `docker exec ${containerId} sh -c "` +
+        `mkdir -p /data/local/tmp /data/data/com.android.webview 2>/dev/null; ` +
+        `echo '--webrtc-ip-handling-policy=disable_non_proxied_udp' > /data/local/tmp/webview-command-line; ` +
+        `echo '--webrtc-ip-handling-policy=disable_non_proxied_udp' > /data/local/tmp/chrome-command-line; ` +
+        `chmod 666 /data/local/tmp/*-command-line 2>/dev/null; true"`
       );
 
-      // 2. Blackhole nas rotas diretas dos principais servidores de STUN da internet (Google, Cloudflare, Twilio, Mozilla)
-      // Simula o comportamento padrão de CGNAT móvel estrito e impede que pacotes UDP alcancem a internet física
-      const stunRanges = [
-        '74.125.0.0/16',     // Google STUN (stun.l.google.com)
-        '142.250.0.0/15',    // Google STUN
-        '172.217.0.0/16',    // Google STUN
-        '216.58.192.0/19',   // Google STUN
-        '216.239.32.0/19',   // Google STUN
-        '162.159.192.0/24',  // Cloudflare STUN (stun.cloudflare.com)
-        '162.159.193.0/24',  // Cloudflare STUN
-        '162.159.195.0/24',  // Cloudflare STUN
-        '54.244.51.0/24',    // Twilio STUN
-        '54.171.0.0/16',     // Twilio STUN
-        '63.245.208.0/21',   // Mozilla STUN (stun.services.mozilla.com)
-      ];
-
-      const routeCommands = stunRanges.map(range => `ip route add blackhole ${range} 2>/dev/null || true`).join(' && ');
-      await this.execAsync(`docker exec ${containerId} sh -c "${routeCommands}"`, 5000);
-
-      console.log(`[RedroidManager] Blindagem contra WebRTC Leak ativada com sucesso para ${containerId}`);
+      // 2. Regra de Firewall Iptables nativa no container: bloqueia tráfego UDP STUN direto
+      await this.execAsync(
+        `docker exec ${containerId} sh -c "` +
+        `iptables -C OUTPUT -p udp --dport 3478 -j REJECT 2>/dev/null || iptables -I OUTPUT -p udp --dport 3478 -j REJECT; ` +
+        `iptables -C OUTPUT -p udp --dport 19302 -j REJECT 2>/dev/null || iptables -I OUTPUT -p udp --dport 19302 -j REJECT; ` +
+        `iptables -C OUTPUT -p udp --dport 5349 -j REJECT 2>/dev/null || iptables -I OUTPUT -p udp --dport 5349 -j REJECT; ` +
+        `true"`
+      );
+      console.log(`[RedroidManager] WebRTC STUN Leak Protection ativa com sucesso no container ${containerId}.`);
     } catch (err) {
-      console.warn('[RedroidManager] Aviso ao aplicar proteção contra WebRTC Leak:', err);
-    }
-  }
-
-  private static async applyStealthProperties(profile: Profile, containerId: string): Promise<void> {
-    try {
-      const resetpropBinary = this.getPublicBinaryPath('resetprop');
-      if (!resetpropBinary) {
-        console.warn('[RedroidManager] Binário resetprop não encontrado para blindagem de propriedades.');
-        return;
-      }
-
-      await this.execAsync(`docker cp "${resetpropBinary}" ${containerId}:/data/local/tmp/resetprop`);
-      await this.execAsync(`docker exec ${containerId} chmod +x /data/local/tmp/resetprop`);
-
-      const device = profile.device;
-      const brand = device?.brand || 'Samsung';
-      const model = device?.model || 'SM-S901B';
-      const devName = device?.device || 'r0s';
-      const board = device?.board || 'exynos2200';
-      let fingerprint = device?.fingerprint || 'samsung/r0sxxx/r0s:12/SP1A.210812.016/S901BXXU1AVA7:user/release-keys';
-      const patch = device?.securityPatch || '2023-08-01';
-      const androidVer = profile.androidVersion || '12';
-
-      // Extrai buildId e incremental da fingerprint real para evitar qualquer divergência detectável
-      let buildId = 'SP1A.210812.016';
-      let incremental = '8500206';
-      try {
-        const parts = fingerprint.split(':');
-        if (parts.length >= 2) {
-          const middle = parts[1].split('/');
-          if (middle.length >= 3) {
-            buildId = middle[1];
-            incremental = middle[2];
-          }
-        }
-      } catch {}
-
-      // Operadora de celular simulada realista de acordo com o país do proxy
-      const country = profile.proxy?.countryCode?.toUpperCase() || 'BR';
-      let carrierName = 'Claro';
-      let carrierNumeric = '72405';
-      if (country === 'US') {
-        carrierName = 'T-Mobile';
-        carrierNumeric = '310260';
-      } else if (country === 'PT') {
-        carrierName = 'MEO';
-        carrierNumeric = '26806';
-      } else if (country === 'GB' || country === 'UK') {
-        carrierName = 'EE';
-        carrierNumeric = '23430';
-      }
-
-      const isSamsung = brand.toLowerCase().includes('samsung');
-      const buildUser = 'android-build';
-      const buildHost = isSamsung ? 'se-infra' : 'android-build.google.com';
-
-      const spoofLines = [
-        `ro.product.brand=${brand}`,
-        `ro.product.manufacturer=${brand}`,
-        `ro.product.model=${model}`,
-        `ro.product.name=${devName}`,
-        `ro.product.device=${devName}`,
-        `ro.product.board=${board}`,
-        `ro.hardware=${board}`,
-        `ro.boot.hardware=${board}`,
-
-        // Identificadores de Compilação Uniformes nas Partições
-        `ro.build.id=${buildId}`,
-        `ro.system.build.id=${buildId}`,
-        `ro.vendor.build.id=${buildId}`,
-        `ro.odm.build.id=${buildId}`,
-        `ro.product.build.id=${buildId}`,
-        `ro.system_ext.build.id=${buildId}`,
-        `ro.vendor_dlkm.build.id=${buildId}`,
-
-        `ro.build.version.incremental=${incremental}`,
-        `ro.system.build.version.incremental=${incremental}`,
-        `ro.vendor.build.version.incremental=${incremental}`,
-        `ro.odm.build.version.incremental=${incremental}`,
-        `ro.product.build.version.incremental=${incremental}`,
-        `ro.system_ext.build.version.incremental=${incremental}`,
-        `ro.vendor_dlkm.build.version.incremental=${incremental}`,
-
-        // Partições
-        `ro.product.system.brand=${brand}`,
-        `ro.product.system.manufacturer=${brand}`,
-        `ro.product.system.model=${model}`,
-        `ro.product.system.name=${devName}`,
-        `ro.product.system.device=${devName}`,
-
-        `ro.product.vendor.brand=${brand}`,
-        `ro.product.vendor.manufacturer=${brand}`,
-        `ro.product.vendor.model=${model}`,
-        `ro.product.vendor.name=${devName}`,
-        `ro.product.vendor.device=${devName}`,
-
-        `ro.product.odm.brand=${brand}`,
-        `ro.product.odm.manufacturer=${brand}`,
-        `ro.product.odm.model=${model}`,
-        `ro.product.odm.name=${devName}`,
-        `ro.product.odm.device=${devName}`,
-
-        `ro.product.product.brand=${brand}`,
-        `ro.product.product.manufacturer=${brand}`,
-        `ro.product.product.model=${model}`,
-        `ro.product.product.name=${devName}`,
-        `ro.product.product.device=${devName}`,
-
-        `ro.product.system_ext.brand=${brand}`,
-        `ro.product.system_ext.manufacturer=${brand}`,
-        `ro.product.system_ext.model=${model}`,
-        `ro.product.system_ext.name=${devName}`,
-        `ro.product.system_ext.device=${devName}`,
-
-        `ro.product.vendor_dlkm.brand=${brand}`,
-        `ro.product.vendor_dlkm.manufacturer=${brand}`,
-        `ro.product.vendor_dlkm.model=${model}`,
-        `ro.product.vendor_dlkm.name=${devName}`,
-        `ro.product.vendor_dlkm.device=${devName}`,
-
-        // Fingerprints uniformes em todas as partições
-        `ro.build.display.id=${fingerprint}`,
-        `ro.build.fingerprint=${fingerprint}`,
-        `ro.system.build.fingerprint=${fingerprint}`,
-        `ro.vendor.build.fingerprint=${fingerprint}`,
-        `ro.odm.build.fingerprint=${fingerprint}`,
-        `ro.product.build.fingerprint=${fingerprint}`,
-        `ro.system_ext.build.fingerprint=${fingerprint}`,
-        `ro.vendor_dlkm.build.fingerprint=${fingerprint}`,
-
-        // Assinatura oficial de release
-        'ro.build.tags=release-keys',
-        'ro.build.type=user',
-        `ro.build.flavor=${devName}-user`,
-        `ro.build.description=${devName}-user ${androidVer} ${patch} release-keys`,
-        `ro.build.product=${devName}`,
-        `ro.build.version.security_patch=${patch}`,
-        `ro.build.user=${buildUser}`,
-        `ro.build.host=${buildHost}`,
-
-        'ro.odm.build.tags=release-keys',
-        'ro.odm.build.type=user',
-        'ro.product.build.tags=release-keys',
-        'ro.product.build.type=user',
-        'ro.system.build.tags=release-keys',
-        'ro.system.build.type=user',
-        'ro.system_ext.build.tags=release-keys',
-        'ro.system_ext.build.type=user',
-        'ro.vendor.build.tags=release-keys',
-        'ro.vendor.build.type=user',
-        'ro.vendor_dlkm.build.tags=release-keys',
-        'ro.vendor_dlkm.build.type=user',
-
-        // Modo de produção seguro (Desliga ro.debuggable e liga ro.secure)
-        'ro.debuggable=0',
-        'ro.secure=1',
-        'ro.adb.secure=1',
-        'ro.bootmode=normal',
-        'ro.boot.bootmode=normal',
-        `ro.bootloader=${board}-0.5-${incremental.slice(0, 8)}`,
-        `net.bt.name=${model}`,
-
-        // Telefonia simulada
-        'gsm.current.phone-type=1',
-        'gsm.network.type=LTE',
-        'gsm.sim.state=READY',
-        `gsm.operator.alpha=${carrierName}`,
-        `gsm.operator.numeric=${carrierNumeric}`,
-        `gsm.sim.operator.alpha=${carrierName}`,
-        `gsm.sim.operator.numeric=${carrierNumeric}`,
-      ];
-
-      const tmpPropFile = path.join('/tmp', `geenjutsu-spoof-${profile.id}.prop`);
-      fs.writeFileSync(tmpPropFile, spoofLines.join('\n'), 'utf8');
-
-      await this.execAsync(`docker cp "${tmpPropFile}" ${containerId}:/data/local/tmp/spoof.prop`);
-      try { fs.unlinkSync(tmpPropFile); } catch {}
-
-      await this.execAsync(`docker exec ${containerId} /data/local/tmp/resetprop -f /data/local/tmp/spoof.prop`);
-
-      // Deleta props do redroid em memória
-      await this.execAsync(`docker exec ${containerId} /data/local/tmp/resetprop -d ro.radio.noril`);
-      // Com GPU host, gralloc/hwcomposer (gbm/drm) são necessários em todo processo novo: não podem ser removidos.
-      if (this.getGpuArgs().length === 0) {
-        await this.execAsync(`docker exec ${containerId} /data/local/tmp/resetprop -d ro.hardware.gralloc`);
-        await this.execAsync(`docker exec ${containerId} /data/local/tmp/resetprop -d ro.hardware.hwcomposer`);
-      }
-      await this.execAsync(`docker exec ${containerId} /data/local/tmp/resetprop -d ro.boot.redroid_dpi`);
-      await this.execAsync(`docker exec ${containerId} /data/local/tmp/resetprop -d ro.boot.redroid_height`);
-      await this.execAsync(`docker exec ${containerId} /data/local/tmp/resetprop -d ro.boot.redroid_width`);
-      await this.execAsync(`docker exec ${containerId} /data/local/tmp/resetprop -d ro.boot.redroid_fps`);
-      await this.execAsync(`docker exec ${containerId} /data/local/tmp/resetprop -d ro.boot.redroid_net_proxy_host`);
-      await this.execAsync(`docker exec ${containerId} /data/local/tmp/resetprop -d ro.boot.redroid_net_proxy_port`);
-      await this.execAsync(`docker exec ${containerId} /data/local/tmp/resetprop -d ro.boot.redroid_net_proxy_type`);
-      await this.execAsync(`docker exec ${containerId} /data/local/tmp/resetprop -d ro.boot.redroid_gpu_mode`);
-      await this.execAsync(`docker exec ${containerId} /data/local/tmp/resetprop -d ro.boot.redroid_gpu_node`);
-      await this.execAsync(`docker exec ${containerId} /data/local/tmp/resetprop -d ro.hardware.vulkan`);
-      await this.execAsync(`docker exec ${containerId} /data/local/tmp/resetprop -d ro.hardware.egl`);
-
-      // Limpeza completa: remove arquivos temporários e o próprio executável resetprop
-      await this.execAsync(`docker exec ${containerId} rm -f /data/local/tmp/resetprop /data/local/tmp/spoof.prop`);
-
-      console.log(`[RedroidManager] Fingerprint de hardware blindada via resetprop para ${profile.name}!`);
-    } catch (err: any) {
-      console.warn('[RedroidManager] Aviso na blindagem de hardware:', err?.message || err);
-    }
-  }
-
-  private static getPublicApkPath(filename: string): string | null {
-    let appPath = '';
-    try {
-      if (app && typeof app.getAppPath === 'function') {
-        appPath = app.getAppPath();
-      }
-    } catch {}
-
-    const candidates = [
-      path.join(process.cwd(), 'public', filename),
-      path.resolve('public', filename),
-      path.join(__dirname, '../public', filename),
-      path.join(__dirname, '../../public', filename),
-      appPath ? path.join(appPath, 'public', filename) : '',
-      process.resourcesPath ? path.join(process.resourcesPath, 'public', filename) : '',
-      process.resourcesPath ? path.join(process.resourcesPath, filename) : '',
-    ].filter(Boolean);
-
-    for (const c of candidates) {
-      if (fs.existsSync(c)) return c;
-    }
-    return null;
-  }
-
-  private static async installInitialApksInBackground(adbPort: number): Promise<void> {
-    try {
-      // Aguarda o PackageManagerService registrar antes de executar a instalação
-      for (let i = 0; i < 25; i++) {
-        const pmCheck = await this.execAsync(`adb -s localhost:${adbPort} shell pm path android`, 3000);
-        if (pmCheck.stdout.includes('package:')) break;
-        await new Promise(r => setTimeout(r, 500));
-      }
-
-      const { stdout: pkgList } = await this.execAsync(`adb -s localhost:${adbPort} shell pm list packages`);
-
-      const initialApps = [
-        { file: 'via-browser.apk', pkg: 'mark.via.gp', label: 'Via Browser' },
-        { file: 'aurora-store.apk', pkg: 'com.aurora.store', label: 'Aurora Store' },
-      ];
-
-      for (const app of initialApps) {
-        if (!pkgList.includes(app.pkg)) {
-          const apkPath = this.getPublicApkPath(app.file);
-          if (apkPath) {
-            console.log(`[RedroidManager] Instalando ${app.label} silenciosamente em background na porta ${adbPort}...`);
-            const res = await this.execAsync(`adb -s localhost:${adbPort} install -r "${apkPath}"`);
-            if (res.stdout.includes('Success')) {
-              console.log(`[RedroidManager] ${app.label} instalado com sucesso em background!`);
-            } else {
-              console.warn(`[RedroidManager] Falha silenciosa ao instalar ${app.label}:`, res.stderr || res.stdout);
-            }
-          }
-        }
-      }
-    } catch (err) {
-      console.warn('[RedroidManager] Erro durante verificação de APKs iniciais:', err);
+      console.warn('[RedroidManager] Aviso ao aplicar proteção WebRTC leak:', err);
     }
   }
 
@@ -1049,13 +564,14 @@ export class RedroidManager {
     adbPort: number,
     info?: RunningContainerInfo
   ): Promise<{ success: boolean; error?: string }> {
-    // Evita abrir múltiplos processos scrcpy concorrentes para o mesmo container
     if (info?.scrcpyProcess && !info.scrcpyProcess.killed) {
       console.log(`[RedroidManager] Display scrcpy já está aberto para "${profile.name}".`);
       return { success: true };
     }
 
-    const scrcpyCheck = await this.execAsync('which scrcpy');
+    const isWin = process.platform === 'win32';
+    const scrcpyCmd = isWin ? 'where scrcpy' : 'which scrcpy';
+    const scrcpyCheck = await this.execAsync(scrcpyCmd);
     if (scrcpyCheck.code !== 0) {
       console.warn('[RedroidManager] scrcpy não encontrado no PATH do sistema.');
       return { success: false, error: 'scrcpy não instalado no sistema. Instale nas dependências do Android.' };
@@ -1064,7 +580,7 @@ export class RedroidManager {
     try {
       console.log(`[RedroidManager] Abrindo display scrcpy para "${profile.name}" (porta: ${adbPort})...`);
       const scrcpyArgs = [
-        '-s', `localhost:${adbPort}`,
+        '-s', `127.0.0.1:${adbPort}`,
         `--window-title=Geenjutsu — ${profile.name}`,
         '--stay-awake',
         '-m', '1920',
@@ -1075,9 +591,13 @@ export class RedroidManager {
         detached: true,
         env: {
           ...process.env,
-          DISPLAY: process.env.DISPLAY || ':1',
-          WAYLAND_DISPLAY: process.env.WAYLAND_DISPLAY || 'wayland-1',
-          XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() || 1000}`,
+          ...(isWin
+            ? {}
+            : {
+                DISPLAY: process.env.DISPLAY || ':1',
+                WAYLAND_DISPLAY: process.env.WAYLAND_DISPLAY || 'wayland-1',
+                XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() || 1000}`,
+              }),
         },
         stdio: ['ignore', 'pipe', 'pipe'],
       });
@@ -1123,7 +643,7 @@ export class RedroidManager {
       adbPort = 55550;
     }
 
-    await this.execAsync(`adb connect localhost:${adbPort}`);
+    await this.execAsync(`adb connect 127.0.0.1:${adbPort}`);
     return await this.spawnScrcpy(profile, adbPort, running);
   }
 
@@ -1140,20 +660,17 @@ export class RedroidManager {
       return { success: false, error: 'Arquivo do pacote não encontrado no caminho especificado.' };
     }
 
-    await this.execAsync(`adb connect localhost:${adbPort}`);
-
+    await this.execAsync(`adb connect 127.0.0.1:${adbPort}`);
     const ext = path.extname(filePath).toLowerCase();
 
     if (ext === '.apk') {
-      console.log(`[RedroidManager] Instalando APK em localhost:${adbPort}: ${filePath}`);
-      // 1. Tenta com compatibilidade ARM64 e identidade da Google Play Store
-      let res = await this.execAsync(`adb -s localhost:${adbPort} install -r -d -g -i com.android.vending --abi arm64-v8a "${filePath}"`, 180000);
+      console.log(`[RedroidManager] Instalando APK em 127.0.0.1:${adbPort}: ${filePath}`);
+      let res = await this.execAsync(`adb -s 127.0.0.1:${adbPort} install -r -d -g -i com.android.vending --abi arm64-v8a "${filePath}"`, 180000);
       if (res.stdout.includes('Success')) {
         return { success: true, message: 'APK instalado com sucesso no Android!' };
       }
-      // 2. Fallback padrão sem forçar ABI
-      console.warn(`[RedroidManager] Falha na 1ª tentativa com --abi arm64-v8a (${res.stderr || res.stdout}). Tentando instalação padrão...`);
-      res = await this.execAsync(`adb -s localhost:${adbPort} install -r -d -g -i com.android.vending "${filePath}"`, 180000);
+      console.warn(`[RedroidManager] Tentando instalação padrão do APK...`);
+      res = await this.execAsync(`adb -s 127.0.0.1:${adbPort} install -r -d -g -i com.android.vending "${filePath}"`, 180000);
       if (res.stdout.includes('Success')) {
         return { success: true, message: 'APK instalado com sucesso no Android!' };
       }
@@ -1161,7 +678,7 @@ export class RedroidManager {
     }
 
     if (ext === '.xapk') {
-      console.log(`[RedroidManager] Processando XAPK em localhost:${adbPort}: ${filePath}`);
+      console.log(`[RedroidManager] Processando XAPK em 127.0.0.1:${adbPort}: ${filePath}`);
       const tmpDir = path.join('/tmp', `geenjutsu-xapk-${Date.now()}`);
       fs.mkdirSync(tmpDir, { recursive: true });
 
@@ -1171,14 +688,12 @@ export class RedroidManager {
           return { success: false, error: 'Falha ao descompactar pacote XAPK.' };
         }
 
-        // Check for OBB files
         const obbDir = path.join(tmpDir, 'Android', 'obb');
         if (fs.existsSync(obbDir)) {
           console.log(`[RedroidManager] Enviando dados OBB para o Android...`);
-          await this.execAsync(`adb -s localhost:${adbPort} push "${obbDir}/." /sdcard/Android/obb/`, 120000);
+          await this.execAsync(`adb -s 127.0.0.1:${adbPort} push "${obbDir}/." /sdcard/Android/obb/`, 120000);
         }
 
-        // Find all apk files recursively or in root
         const findFiles = (dir: string): string[] => {
           let results: string[] = [];
           const list = fs.readdirSync(dir);
@@ -1200,24 +715,23 @@ export class RedroidManager {
         }
 
         if (apks.length === 1) {
-          let res = await this.execAsync(`adb -s localhost:${adbPort} install -r -d -g -i com.android.vending --abi arm64-v8a "${apks[0]}"`, 180000);
+          let res = await this.execAsync(`adb -s 127.0.0.1:${adbPort} install -r -d -g -i com.android.vending --abi arm64-v8a "${apks[0]}"`, 180000);
           if (res.stdout.includes('Success')) {
             return { success: true, message: 'XAPK instalado com sucesso no Android!' };
           }
-          res = await this.execAsync(`adb -s localhost:${adbPort} install -r -d -g -i com.android.vending "${apks[0]}"`, 180000);
+          res = await this.execAsync(`adb -s 127.0.0.1:${adbPort} install -r -d -g -i com.android.vending "${apks[0]}"`, 180000);
           if (res.stdout.includes('Success')) {
             return { success: true, message: 'XAPK instalado com sucesso no Android!' };
           }
           return { success: false, error: res.stderr || res.stdout || 'Falha ao instalar APK do pacote XAPK.' };
         }
 
-        // Multiple split APKs (App Bundle)
         const apkArgs = apks.map(a => `"${a}"`).join(' ');
-        let res = await this.execAsync(`adb -s localhost:${adbPort} install-multiple -r -d -g -i com.android.vending --abi arm64-v8a ${apkArgs}`, 180000);
+        let res = await this.execAsync(`adb -s 127.0.0.1:${adbPort} install-multiple -r -d -g -i com.android.vending --abi arm64-v8a ${apkArgs}`, 180000);
         if (res.stdout.includes('Success')) {
           return { success: true, message: 'XAPK (Split APKs) instalado com sucesso no Android!' };
         }
-        res = await this.execAsync(`adb -s localhost:${adbPort} install-multiple -r -d -g -i com.android.vending ${apkArgs}`, 180000);
+        res = await this.execAsync(`adb -s 127.0.0.1:${adbPort} install-multiple -r -d -g -i com.android.vending ${apkArgs}`, 180000);
         if (res.stdout.includes('Success')) {
           return { success: true, message: 'XAPK (Split APKs) instalado com sucesso no Android!' };
         }
@@ -1248,7 +762,6 @@ export class RedroidManager {
     let tempFilePath = '';
     try {
       onProgress?.({ stage: 'downloading', progress: 0 });
-
       console.log(`[RedroidManager] Baixando APK/XAPK para ${appName}: ${downloadUrl}`);
       const res = await electronNet.fetch(downloadUrl, {
         headers: {
@@ -1307,7 +820,6 @@ export class RedroidManager {
       console.log(`[RedroidManager] Download de ${appName} concluído (${receivedBytes} bytes). Instalando no Android...`);
       onProgress?.({ stage: 'installing', progress: 100 });
 
-      // Garante exclusão mútua na etapa de instalação ADB no perfil
       const result = await this.withInstallLock(profileId, async () => {
         return await this.installAppPackage(profileId, tempFilePath);
       });
@@ -1345,17 +857,14 @@ export class RedroidManager {
     }
 
     try {
-      await this.execAsync(`adb connect localhost:${adbPort}`);
+      await this.execAsync(`adb connect 127.0.0.1:${adbPort}`);
 
       if (packageName) {
-        // Envia o intent para a Aurora Store abrir diretamente no pacote desejado
-        await this.execAsync(`adb -s localhost:${adbPort} shell am start -a android.intent.action.VIEW -d "market://details?id=${packageName}"`);
+        await this.execAsync(`adb -s 127.0.0.1:${adbPort} shell am start -a android.intent.action.VIEW -d "market://details?id=${packageName}"`);
       } else {
-        // Abre a Aurora Store na tela inicial
-        await this.execAsync(`adb -s localhost:${adbPort} shell monkey -p com.aurora.store 1`);
+        await this.execAsync(`adb -s 127.0.0.1:${adbPort} shell monkey -p com.aurora.store 1`);
       }
 
-      // Garante que o display do Android via scrcpy esteja visível na tela
       const data = DataStore.read();
       const profile = (data.profiles || []).find((p: any) => p.id === profileId);
       if (profile) {
@@ -1490,7 +999,7 @@ export class RedroidManager {
         }
       });
 
-      server.on('clientError', (err, socket) => {
+      server.on('clientError', (_err, socket) => {
         try {
           socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
           socket.destroy();
@@ -1502,7 +1011,6 @@ export class RedroidManager {
         const targetHost = parts[0];
         const targetPort = parseInt(parts[1] || '443', 10);
 
-        // Previne Uncaught Exception (ECONNRESET/EPIPE) se o cliente Android fechar o socket prematuramente
         clientSocket.on('error', () => {
           try { clientSocket.destroy(); } catch {}
         });
@@ -1520,7 +1028,6 @@ export class RedroidManager {
             destination: { host: targetHost, port: targetPort },
           })
             .then((info) => {
-              // Previne Uncaught Exception (ECONNRESET/EPIPE) no socket da proxy upstream
               info.socket.on('error', () => {
                 try {
                   info.socket.destroy();
@@ -1579,7 +1086,6 @@ export class RedroidManager {
         }
       });
 
-      // Escuta apenas na bridge do Docker: não expõe a proxy (com credenciais) para a rede local
       server.listen(0, '172.17.0.1', () => {
         const address = server.address();
         const port = typeof address === 'object' && address ? address.port : 0;
@@ -1600,11 +1106,9 @@ export class RedroidManager {
   static async closeAll(): Promise<void> {
     console.log('[RedroidManager] Encerrando todas as instâncias Android, processos scrcpy e conexões ADB...');
 
-    // 1. Para todos os perfis registrados em memória (mata scrcpy, fecha proxy forwarder, docker stop)
     const runningIds = Array.from(this.runningProfiles.keys());
     await Promise.allSettled(runningIds.map(id => this.stopProfile(id)));
 
-    // 2. Garante parada de qualquer container Docker remanescente do Geenjutsu
     try {
       const { stdout } = await this.execAsync(
         'docker ps -q --filter "name=geenjutsu-android-"',
@@ -1619,7 +1123,6 @@ export class RedroidManager {
       console.warn('[RedroidManager] Aviso ao parar containers remanescentes:', err);
     }
 
-    // 3. Desconecta sessões ADB abertas
     try {
       await this.execAsync('adb disconnect', 4000);
     } catch {}

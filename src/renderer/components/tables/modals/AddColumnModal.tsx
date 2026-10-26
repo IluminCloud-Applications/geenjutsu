@@ -88,6 +88,12 @@ export const AddColumnModal: React.FC = () => {
       icon: 'ri-calendar-event-line',
       desc: 'Data e hora no formato DD/MM HH:mm com edição rápida e atalhos',
     },
+    {
+      type: '2fa',
+      label: '2FA (Autenticador)',
+      icon: 'ri-shield-keyhole-line',
+      desc: 'Armazena a chave 2FA e gera códigos de 6 dígitos em tempo real com botão de cópia (estilo 2fa.live)',
+    },
   ];
 
   return (

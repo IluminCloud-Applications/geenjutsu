@@ -87,7 +87,7 @@ export const ProfileRow: React.FC<ProfileRowProps> = ({ profile }) => {
     if (profile.runtime === 'android' || profile.os === 'android') {
       return (
         <div className="flex items-center gap-1 text-emerald-500">
-          <i className="ri-android-fill text-[11px]" title="Android" />
+          <i className="ri-android-fill text-[12px]" title="Android" />
         </div>
       );
     }

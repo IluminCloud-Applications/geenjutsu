@@ -1,7 +1,9 @@
-import { exec, spawn } from 'child_process';
+import { exec, spawn, execSync } from 'child_process';
 import { EventEmitter } from 'events';
 import fs from 'fs';
+import path from 'path';
 import { DependencyId, DependencyItem, SystemDiagnosticResult } from '../../types';
+import { ANDROID_STEALTH_CONFIG } from '../../shared/androidConfig';
 
 class DependencyEventEmitter extends EventEmitter {}
 
@@ -10,6 +12,43 @@ export class DependencyService {
 
   static on(event: 'log', listener: (log: string) => void) {
     this.emitter.on(event, listener);
+  }
+
+  /**
+   * Recarrega o PATH do sistema no Windows a partir do Registro e diretórios conhecidos
+   * para que novos binários instalados (adb, scrcpy, docker) sejam detectados sem reiniciar o app.
+   */
+  private static refreshWindowsPath(): void {
+    if (process.platform !== 'win32') return;
+    try {
+      const regMachine = execSync(
+        'reg query "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment" /v Path',
+        { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }
+      );
+      const regUser = execSync(
+        'reg query "HKCU\\Environment" /v Path',
+        { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }
+      );
+      const mMatch = regMachine.match(/REG_\w+\s+(.*)/);
+      const uMatch = regUser.match(/REG_\w+\s+(.*)/);
+      const machinePath = mMatch ? mMatch[1].trim() : '';
+      const userPath = uMatch ? uMatch[1].trim() : '';
+
+      const localAppData = process.env.LOCALAPPDATA || '';
+      const programFiles = process.env.ProgramFiles || 'C:\\Program Files';
+      const knownDirs = [
+        path.join(programFiles, 'scrcpy'),
+        path.join(programFiles, 'platform-tools'),
+        'C:\\ProgramData\\chocolatey\\bin',
+        path.join(localAppData, 'Programs', 'scrcpy'),
+        path.join(localAppData, 'Android', 'Sdk', 'platform-tools'),
+        path.join(localAppData, 'Microsoft', 'WinGet', 'Packages'),
+      ].filter(d => fs.existsSync(d));
+
+      const combined = [userPath, machinePath, ...knownDirs, process.env.PATH || ''].filter(Boolean).join(';');
+      const unique = Array.from(new Set(combined.split(';'))).filter(Boolean).join(';');
+      process.env.PATH = unique;
+    } catch {}
   }
 
   private static execAsync(command: string): Promise<{ stdout: string; stderr: string; code: number }> {
@@ -34,6 +73,10 @@ export class DependencyService {
     const os = process.platform as 'linux' | 'win32' | 'darwin';
     const isWindows = os === 'win32';
     const isLinux = os === 'linux';
+
+    if (isWindows) {
+      this.refreshWindowsPath();
+    }
 
     // 0. WSL Check on Windows
     let wslItem: DependencyItem | null = null;
@@ -172,12 +215,23 @@ export class DependencyService {
     } else if (os === 'win32') {
       const wsl = await this.execAsync('wsl --status');
       if (wsl.code === 0) {
-        item.status = 'ok';
-        item.version = 'WSL2 Binder OK';
-        item.actionLabel = undefined;
+        // Valida se a distribuição do WSL possui os nós do Binder disponíveis
+        const wslBinder = await this.execAsync('wsl -e sh -c "ls /dev/binder* /dev/binderfs 2>/dev/null"');
+        const hasBinder = wslBinder.code === 0 && (wslBinder.stdout.includes('binder') || wslBinder.stdout.includes('binderfs'));
+        if (hasBinder) {
+          item.status = 'ok';
+          item.version = 'WSL2 Binder OK';
+          item.actionLabel = undefined;
+        } else {
+          item.status = 'outdated';
+          item.version = 'Requer Kernel Binder';
+          item.error = 'WSL2 ativo. Para o Android funcionar, é necessário habilitar o módulo Binder no kernel do WSL2.';
+          item.actionLabel = 'Info Binder';
+        }
       } else {
         item.status = 'missing';
-        item.error = 'Requer WSL2 com kernel configurado.';
+        item.error = 'Requer WSL2 instalado no Windows (wsl --install).';
+        item.actionLabel = 'Instalar WSL2';
       }
     } else {
       item.status = 'outdated';
@@ -191,29 +245,42 @@ export class DependencyService {
   private static async checkRedroidImage(): Promise<DependencyItem> {
     const item: DependencyItem = {
       id: 'redroid',
-      name: 'Imagem Redroid (Android Container)',
-      description: 'Imagem do sistema operacional Android para containers emuladores.',
+      name: 'Imagem Android Stealth Anti-Detect (Galaxy S22 5G)',
+      description: 'Imagem nativa blindada anti-detect com hardware Samsung e sensores físicos.',
       status: 'missing',
       required: true,
       actionLabel: 'Baixar Imagem',
     };
 
-    const inspect = await this.execAsync('docker images --format "{{.Repository}}:{{.Tag}}" | grep "^redroid/redroid:"');
+    // Executa sem pipes de shell para compatibilidade nativa 100% no cmd/powershell do Windows e Linux
+    const inspect = await this.execAsync('docker images --format "{{.Repository}}:{{.Tag}}"');
     if (inspect.code === 0 && inspect.stdout) {
       const tags = inspect.stdout.split('\n').map(t => t.trim()).filter(Boolean);
-      item.status = 'ok';
-      item.version = tags[0];
-      item.actionLabel = undefined;
-    } else {
-      item.status = 'missing';
-      item.error = 'Imagem redroid/redroid não baixada no Docker local.';
-      item.actionLabel = 'Baixar Imagem';
+      const matched = tags.find(tag =>
+        tag === ANDROID_STEALTH_CONFIG.REMOTE_IMAGE ||
+        tag === ANDROID_STEALTH_CONFIG.REMOTE_IMAGE_LATEST ||
+        tag === ANDROID_STEALTH_CONFIG.LOCAL_IMAGE ||
+        tag.startsWith('redroid/redroid:')
+      );
+      if (matched) {
+        item.status = 'ok';
+        item.version = matched;
+        item.actionLabel = undefined;
+        return item;
+      }
     }
+
+    item.status = 'missing';
+    item.error = `Imagem Android Stealth (${ANDROID_STEALTH_CONFIG.REMOTE_IMAGE}) não baixada no Docker local.`;
+    item.actionLabel = 'Baixar Imagem';
 
     return item;
   }
 
   private static async checkAdb(): Promise<DependencyItem> {
+    if (process.platform === 'win32') {
+      this.refreshWindowsPath();
+    }
     const item: DependencyItem = {
       id: 'adb',
       name: 'Android Debug Bridge (ADB)',
@@ -238,6 +305,9 @@ export class DependencyService {
   }
 
   private static async checkScrcpy(): Promise<DependencyItem> {
+    if (process.platform === 'win32') {
+      this.refreshWindowsPath();
+    }
     const item: DependencyItem = {
       id: 'scrcpy',
       name: 'scrcpy (Display & Controle)',
@@ -269,8 +339,15 @@ export class DependencyService {
     this.emitter.emit('log', `Iniciando ação para dependência: ${id}...`);
 
     if (id === 'redroid') {
-      const targetImage = 'redroid/redroid:12.0.0-latest';
-      this.emitter.emit('log', `Baixando imagem estável do Redroid: ${targetImage}...`);
+      const dockerCheck = await this.execAsync("docker info --format '{{.ServerVersion}}'");
+      if (dockerCheck.code !== 0 || !dockerCheck.stdout) {
+        const errorMsg = 'O serviço do Docker não está ativo. Por favor, instale ou inicie o Docker antes de baixar a imagem Android.';
+        this.emitter.emit('log', `[ERRO] ${errorMsg}`);
+        return { success: false, log: errorMsg };
+      }
+
+      const targetImage = ANDROID_STEALTH_CONFIG.REMOTE_IMAGE;
+      this.emitter.emit('log', `Baixando imagem Android Stealth Oficial: ${targetImage}...`);
       this.emitter.emit('log', `$ docker pull ${targetImage}`);
 
       return new Promise((resolve) => {
@@ -322,31 +399,36 @@ export class DependencyService {
 
     if (id === 'wsl') {
       if (os === 'win32') {
-        command = 'wsl --install --no-launch';
+        command = 'powershell -Command "Start-Process wsl -ArgumentList \'--install --no-launch\' -Verb RunAs -Wait"';
       }
     } else if (id === 'binder') {
       if (os === 'linux') {
         // - fstab usa "defaults" (o typo "default" faz o mount falhar no boot e o Binder "some" a cada reinício)
         // - chmod apenas nos nós; nunca no diretório /dev/binderfs (666 remove o bit de execução e bloqueia o acesso)
         command = 'pkexec bash -c "mkdir -p /dev/binderfs && (sed -i \'s#^binder /dev/binderfs binder default,nofail#binder /dev/binderfs binder defaults,nofail#\' /etc/fstab || true) && (grep -q \'binder /dev/binderfs\' /etc/fstab || echo \'binder /dev/binderfs binder defaults,nofail 0 0\' >> /etc/fstab) && (mountpoint -q /dev/binderfs || mount /dev/binderfs 2>/dev/null || mount -t binder binder /dev/binderfs 2>/dev/null || true) && (modprobe binder_linux devices=binder,hwbinder,vndbinder 2>/dev/null || true) && chmod 755 /dev/binderfs 2>/dev/null; ([ -e /dev/binderfs/binder ] && ln -sf /dev/binderfs/binder /dev/binder || true) && ([ -e /dev/binderfs/hwbinder ] && ln -sf /dev/binderfs/hwbinder /dev/hwbinder || true) && ([ -e /dev/binderfs/vndbinder ] && ln -sf /dev/binderfs/vndbinder /dev/vndbinder || true) && chmod 666 /dev/binderfs/binder /dev/binderfs/hwbinder /dev/binderfs/vndbinder /dev/binderfs/binder-control 2>/dev/null || true"';
+      } else if (os === 'win32') {
+        this.emitter.emit('log', '=== Orientação Binder para WSL2 (Windows) ===');
+        this.emitter.emit('log', 'O kernel oficial padrão da Microsoft no WSL2 não compila módulos Android Binder.');
+        this.emitter.emit('log', 'Para ativar o Binder no Windows: utilize um kernel WSL2 com suporte a Binder (ex: projeto wsl-redroid no GitHub) inserindo "kernel=C:\\\\caminho\\\\bzImage" no arquivo .wslconfig.');
+        return { success: true, log: 'Instruções de kernel WSL2 Binder exibidas no terminal.' };
       }
     } else if (id === 'scrcpy') {
       if (os === 'linux') {
         command = 'pkexec bash -c "apt-get update && apt-get install -y scrcpy"';
       } else if (os === 'win32') {
-        command = 'winget install Genymobile.scrcpy || choco install scrcpy';
+        command = 'winget install Genymobile.scrcpy --accept-source-agreements --accept-package-agreements --disable-interactivity || choco install scrcpy -y';
       }
     } else if (id === 'adb') {
       if (os === 'linux') {
         command = 'pkexec bash -c "apt-get update && apt-get install -y adb"';
       } else if (os === 'win32') {
-        command = 'winget install Google.PlatformTools || choco install adb';
+        command = 'winget install Google.PlatformTools --accept-source-agreements --accept-package-agreements --disable-interactivity || choco install adb -y';
       }
     } else if (id === 'docker') {
       if (os === 'linux') {
         command = 'pkexec bash -c "(which docker >/dev/null || (apt-get update && apt-get install -y docker.io)) && systemctl enable --now docker && (getent group docker || groupadd docker) && usermod -aG docker $USER && chmod 666 /var/run/docker.sock 2>/dev/null || true"';
       } else if (os === 'win32') {
-        command = 'winget install Docker.DockerDesktop || start "" "C:\\Program Files\\Docker\\Docker\\Docker Desktop.exe"';
+        command = 'powershell -Command "if (Test-Path \'C:\\Program Files\\Docker\\Docker\\Docker Desktop.exe\') { Start-Process \'C:\\Program Files\\Docker\\Docker\\Docker Desktop.exe\' } else { winget install Docker.DockerDesktop --accept-source-agreements --accept-package-agreements --disable-interactivity }"';
       }
     }
 
@@ -358,6 +440,9 @@ export class DependencyService {
 
     this.emitter.emit('log', `$ ${command}`);
     const result = await this.execAsync(command);
+    if (os === 'win32') {
+      this.refreshWindowsPath();
+    }
     const combinedLog = result.stdout + (result.stderr ? '\n' + result.stderr : '');
     this.emitter.emit('log', combinedLog || (result.code === 0 ? 'Concluído com sucesso.' : 'Falha na execução.'));
 

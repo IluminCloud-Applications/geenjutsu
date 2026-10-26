@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { CamoufoxManager, ProfileProxyConfig } from './services/camoufoxManager';
+import { CamoufoxInstallerService } from './services/camoufoxInstallerService';
 import { RedroidManager } from './services/redroidManager';
 import { DependencyService } from './services/dependencyService';
 import { DataStore } from './services/dataStore';
@@ -11,6 +12,8 @@ import { WarmupScheduler } from './services/warmupScheduler';
 import { AutomationEngine } from './services/automationEngine';
 import { ProxyChecker } from './services/proxyChecker';
 import { TableStore } from './services/tableStore';
+import { IntegrationStore } from './services/integrationStore';
+import { ProxySellerService } from './services/proxySellerService';
 
 
 process.env.NODE_NO_WARNINGS = '1';
@@ -120,6 +123,7 @@ async function quitApplication(): Promise<void> {
   if (isQuitting) return;
   isQuitting = true;
   WarmupScheduler.stop();
+  WarmupEngine.stopAll();
 
   try {
     console.log('[Main] Encerrando navegadores Camoufox...');
@@ -370,6 +374,10 @@ app.whenReady().then(() => {
     mainWindow?.webContents.send('profile:warmup-finished', data);
   });
 
+  WarmupEngine.on('queue_updated', (data) => {
+    mainWindow?.webContents.send('profile:warmup-queue-changed', data);
+  });
+
   // Setup AutomationEngine event broadcasting to renderer
   AutomationEngine.on('state', (state) => {
     mainWindow?.webContents.send('automation:state-changed', state);
@@ -476,8 +484,25 @@ app.whenReady().then(() => {
         return result;
       }
 
+      if (WarmupEngine.isQueued(profileData.id)) {
+        console.log(`[Main] Perfil "${profileData.name}" estava na fila de aquecimento. Removendo da fila para abrir navegador do usuário.`);
+        WarmupEngine.removeFromQueue(profileData.id);
+      }
+
       if (WarmupEngine.getStatus(profileData.id)?.isRunning) {
-        return { success: false, error: 'O perfil está em processo de aquecimento. Interrompa o aquecimento antes de abrir.' };
+        console.log(`[Main] Perfil "${profileData.name}" está em aquecimento. Interrompendo aquecimento para abrir navegador do usuário...`);
+        WarmupEngine.stopWarmup(profileData.id);
+        await new Promise((resolve) => setTimeout(resolve, 400));
+      }
+
+      // Check if Camoufox browser engine is installed
+      const camoufoxStatus = await CamoufoxInstallerService.checkStatus();
+      if (!camoufoxStatus.installed) {
+        return {
+          success: false,
+          error: 'O motor do navegador Camoufox Anti-Detect ainda não está instalado.',
+          needsInstall: true,
+        };
       }
 
       const osMap: Record<string, 'windows' | 'macos' | 'linux'> = {
@@ -530,6 +555,24 @@ app.whenReady().then(() => {
     const browserIds = CamoufoxManager.getRunningProfileIds();
     const androidIds = await RedroidManager.getRunningProfileIds();
     return Array.from(new Set([...browserIds, ...androidIds]));
+  });
+
+  // Camoufox Engine Operations & Auto-Installer
+  ipcMain.handle('camoufox:check-status', async () => {
+    return await CamoufoxInstallerService.checkStatus();
+  });
+
+  ipcMain.handle('camoufox:install', async (event) => {
+    return await CamoufoxInstallerService.install((progress) => {
+      try {
+        event.sender.send('camoufox:install-progress', progress);
+      } catch {}
+    });
+  });
+
+  ipcMain.handle('camoufox:cancel-install', () => {
+    CamoufoxInstallerService.cancel();
+    return { success: true };
   });
 
   // Android Specific IPC
@@ -721,6 +764,10 @@ app.whenReady().then(() => {
     return WarmupEngine.getRunningWarmupIds();
   });
 
+  ipcMain.handle('warmup:get-queue', () => {
+    return WarmupEngine.getQueuedWarmupIds();
+  });
+
   ipcMain.handle('warmup:save-config', (_, { profileId, config }: { profileId: string; config: any }) => {
     const data = DataStore.read();
     const updatedProfiles = data.profiles.map((p) => {
@@ -854,6 +901,15 @@ app.whenReady().then(() => {
     }
   });
 
+  ipcMain.handle('tables:reorder-columns', (_, { tableId, columnIds }: { tableId: string; columnIds: string[] }) => {
+    try {
+      return TableStore.reorderColumns(tableId, columnIds);
+    } catch (err: any) {
+      console.error('[Main] Erro ao reordenar colunas:', err);
+      return false;
+    }
+  });
+
   ipcMain.handle('tables:get-templates', () => {
     try {
       return TableStore.getTemplates();
@@ -861,6 +917,107 @@ app.whenReady().then(() => {
       console.error('[Main] Erro ao buscar templates de tabelas:', err);
       return [];
     }
+  });
+
+  // Integrations & Proxy Seller IPC (SQLite Engine + Remote API v2)
+  ipcMain.handle('integrations:get-all', () => {
+    try {
+      return IntegrationStore.getAllIntegrations();
+    } catch (err: any) {
+      console.error('[Main] Erro ao obter integrações:', err);
+      return [];
+    }
+  });
+
+  ipcMain.handle('integrations:get-by-id', (_, serviceId: string) => {
+    try {
+      return IntegrationStore.getIntegration(serviceId);
+    } catch (err: any) {
+      console.error('[Main] Erro ao obter integração:', err);
+      return null;
+    }
+  });
+
+  ipcMain.handle('integrations:save', (_, { serviceId, apiKey, status, cachedBalance, cachedData, settings }: any) => {
+    try {
+      return IntegrationStore.saveIntegration(serviceId, apiKey, status, cachedBalance, cachedData, settings);
+    } catch (err: any) {
+      console.error('[Main] Erro ao salvar integração:', err);
+      throw err;
+    }
+  });
+
+  ipcMain.handle('integrations:delete', (_, serviceId: string) => {
+    try {
+      return IntegrationStore.deleteIntegration(serviceId);
+    } catch (err: any) {
+      console.error('[Main] Erro ao excluir integração:', err);
+      return false;
+    }
+  });
+
+  // Proxy Seller Actions
+  ipcMain.handle('proxy-seller:test-connection', async (_, apiKey: string) => {
+    return ProxySellerService.testConnection(apiKey);
+  });
+
+  ipcMain.handle('proxy-seller:get-balance', async (_, apiKey?: string) => {
+    const key = apiKey || IntegrationStore.getIntegration('proxy-seller')?.apiKey;
+    if (!key) return { success: false, error: 'Chave do Proxy Seller não encontrada' };
+    const res = await ProxySellerService.getBalance(key);
+    if (res.success && res.data) {
+      IntegrationStore.saveIntegration('proxy-seller', key, 'connected', res.data.summ);
+    }
+    return res;
+  });
+
+  ipcMain.handle('proxy-seller:get-residential-info', async (_, apiKey?: string) => {
+    const key = apiKey || IntegrationStore.getIntegration('proxy-seller')?.apiKey;
+    if (!key) return { success: false, error: 'Chave do Proxy Seller não encontrada' };
+    const res = await ProxySellerService.getResidentialInfo(key);
+    if (res.success && res.package) {
+      IntegrationStore.saveIntegration('proxy-seller', key, 'connected', undefined, {
+        package: res.package,
+        lists: res.lists,
+      });
+    }
+    return res;
+  });
+
+  ipcMain.handle('proxy-seller:update-rotation', async (_, { listId, rotationSeconds, apiKey }: any) => {
+    const key = apiKey || IntegrationStore.getIntegration('proxy-seller')?.apiKey;
+    if (!key) return { success: false, error: 'Chave do Proxy Seller não encontrada' };
+    return ProxySellerService.updateRotation(key, listId, rotationSeconds);
+  });
+
+  ipcMain.handle('proxy-seller:get-isp-proxies', async (_, apiKey?: string) => {
+    const key = apiKey || IntegrationStore.getIntegration('proxy-seller')?.apiKey;
+    if (!key) return { success: false, error: 'Chave do Proxy Seller não encontrada' };
+    return ProxySellerService.getIspProxies(key);
+  });
+
+  ipcMain.handle('proxy-seller:buy-proxy', async (_, { params, apiKey }: any) => {
+    const key = apiKey || IntegrationStore.getIntegration('proxy-seller')?.apiKey;
+    if (!key) return { success: false, error: 'Chave do Proxy Seller não encontrada' };
+    return ProxySellerService.buyProxy(key, params);
+  });
+
+  ipcMain.handle('proxy-seller:get-reference-list', async (_, { type, apiKey }: any) => {
+    const key = apiKey || IntegrationStore.getIntegration('proxy-seller')?.apiKey;
+    if (!key) return { success: false, error: 'Chave do Proxy Seller não encontrada' };
+    return ProxySellerService.getReferenceList(key, type || 'isp');
+  });
+
+  ipcMain.handle('proxy-seller:calculate-order', async (_, { params, apiKey }: any) => {
+    const key = apiKey || IntegrationStore.getIntegration('proxy-seller')?.apiKey;
+    if (!key) return { success: false, error: 'Chave do Proxy Seller não encontrada' };
+    return ProxySellerService.calculateOrder(key, params);
+  });
+
+  ipcMain.handle('proxy-seller:check-card', async (_, apiKey?: string) => {
+    const key = apiKey || IntegrationStore.getIntegration('proxy-seller')?.apiKey;
+    if (!key) return { success: false, error: 'Chave do Proxy Seller não encontrada' };
+    return ProxySellerService.checkCardSubscription(key);
   });
 
   // Start automatic warmup scheduler (daily 24h & active interval)

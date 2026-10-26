@@ -52,10 +52,11 @@ export const AndroidSetupModal: React.FC<AndroidSetupModalProps> = ({
     return unsub;
   }, []);
 
-  const handleAction = async (id: DependencyId) => {
-    if (!window.geenjutsuApi?.installAndroidDependency || installingId !== null) return;
+  const handleAction = async (id: DependencyId): Promise<boolean> => {
+    if (!window.geenjutsuApi?.installAndroidDependency || installingId !== null) return false;
     setInstallingId(id);
     setShowLogs(true);
+    let success = false;
 
     // Auto-poll diagnostic during installation to catch completion immediately
     const pollTimer = setInterval(async () => {
@@ -69,14 +70,67 @@ export const AndroidSetupModal: React.FC<AndroidSetupModalProps> = ({
     }, 2000);
 
     try {
-      await window.geenjutsuApi.installAndroidDependency(id);
+      const res = await window.geenjutsuApi.installAndroidDependency(id);
+      success = Boolean(res?.success);
     } catch (e: any) {
       setTerminalLogs(prev => [...prev, `[ERRO] ${e?.message || String(e)}`]);
+      success = false;
     } finally {
       clearInterval(pollTimer);
       setInstallingId(null);
       await fetchDiagnostic();
     }
+    return success;
+  };
+
+  const handleInstallAll = async () => {
+    if (!window.geenjutsuApi?.checkAndroidDependencies || installingId !== null) return;
+    setShowLogs(true);
+    setTerminalLogs(prev => [...prev, '--- Iniciando instalação sequencial de dependências ---']);
+
+    // Busca o diagnóstico mais recente
+    let currentDiag = await window.geenjutsuApi.checkAndroidDependencies();
+    setDiagnostic(currentDiag);
+
+    for (const key of dependencyKeys) {
+      const item = currentDiag.items ? currentDiag.items[key] : null;
+      if (!item || item.status === 'ok' || !item.actionLabel) {
+        continue;
+      }
+
+      // Pré-requisito: para baixar a imagem Android (redroid), o Docker precisa estar ativo
+      if (key === 'redroid') {
+        const isDockerReady = currentDiag.items?.docker?.status === 'ok';
+        if (!isDockerReady) {
+          setTerminalLogs(prev => [
+            ...prev,
+            '[AVISO] O Docker precisa estar instalado e em execução antes de baixar a imagem Android.',
+            '[AVISO] Inicie o Docker e execute novamente para concluir o download da imagem.'
+          ]);
+          continue;
+        }
+      }
+
+      setTerminalLogs(prev => [...prev, `[ETAPA] Configurando: ${item.name}...`]);
+      const success = await handleAction(key);
+
+      // Re-busca o diagnóstico para ter o status real atualizado após a ação
+      currentDiag = await window.geenjutsuApi.checkAndroidDependencies();
+      setDiagnostic(currentDiag);
+      if (onStatusChanged) onStatusChanged(currentDiag.allOk);
+
+      // No Windows, se o WSL2 acabou de ser instalado, avisa que o reboot é necessário antes do Docker
+      if (key === 'wsl' && success) {
+        setTerminalLogs(prev => [
+          ...prev,
+          '[IMPORTANTE] O WSL2 foi instalado. É necessário reiniciar o computador para o Windows concluir a ativação.'
+        ]);
+        break;
+      }
+    }
+
+    setTerminalLogs(prev => [...prev, '--- Processo de instalação concluído ---']);
+    await fetchDiagnostic();
   };
 
   const isAllOk = diagnostic?.allOk ?? false;
@@ -108,9 +162,16 @@ export const AndroidSetupModal: React.FC<AndroidSetupModalProps> = ({
     );
   };
 
+  // Ordem lógica estrita de dependências:
+  // 1. WSL2 (base do Docker no Windows)
+  // 2. Docker Engine (runtime de containers)
+  // 3. Binder (módulo de IPC)
+  // 4. ADB (ferramenta de conexão)
+  // 5. scrcpy (espelhamento de tela)
+  // 6. Imagem Android (baixada por último após o Docker estar garantidamente pronto)
   const dependencyKeys: DependencyId[] = isWindows
-    ? ['wsl', 'docker', 'binder', 'redroid', 'adb', 'scrcpy']
-    : ['docker', 'binder', 'redroid', 'adb', 'scrcpy'];
+    ? ['wsl', 'docker', 'binder', 'adb', 'scrcpy', 'redroid']
+    : ['docker', 'binder', 'adb', 'scrcpy', 'redroid'];
 
   return (
     <Modal
@@ -120,18 +181,33 @@ export const AndroidSetupModal: React.FC<AndroidSetupModalProps> = ({
       maxWidth="xl"
       footer={
         <div className="w-full flex items-center justify-between">
-          <Button
-            variant="ghost"
-            size="sm"
-            icon={isChecking ? 'ri-loader-4-line animate-spin' : 'ri-refresh-line'}
-            disabled={isChecking || installingId !== null}
-            onClick={fetchDiagnostic}
-          >
-            {isChecking ? 'Verificando...' : 'Verificar Novamente'}
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              icon={isChecking ? 'ri-loader-4-line animate-spin' : 'ri-refresh-line'}
+              disabled={isChecking || installingId !== null}
+              onClick={fetchDiagnostic}
+            >
+              {isChecking ? 'Verificando...' : 'Verificar Novamente'}
+            </Button>
+
+            {!isAllOk && (
+              <Button
+                variant="primary"
+                size="sm"
+                icon={installingId !== null ? 'ri-loader-4-line animate-spin' : 'ri-download-cloud-line'}
+                disabled={isChecking || installingId !== null}
+                onClick={handleInstallAll}
+                className="text-xs"
+              >
+                {installingId !== null ? 'Instalando...' : 'Instalar Todas Pendentes'}
+              </Button>
+            )}
+          </div>
 
           <Button
-            variant="primary"
+            variant="secondary"
             size="sm"
             onClick={onClose}
           >

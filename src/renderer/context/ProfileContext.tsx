@@ -111,6 +111,9 @@ interface ProfileContextType {
   isProfileEconomy: (profileId: string) => boolean;
   warmingProfileIds: string[];
   isProfileWarming: (profileId: string) => boolean;
+  queuedWarmupProfileIds: string[];
+  isProfileQueued: (profileId: string) => boolean;
+  getWarmupQueuePosition: (profileId: string) => number;
   stopProfileWarmup: (profileId: string) => Promise<boolean>;
   moveToTrash: (id: string) => void;
 
@@ -150,6 +153,10 @@ interface ProfileContextType {
   isUpdateModalOpen: boolean;
   setIsUpdateModalOpen: (open: boolean) => void;
   checkForUpdates: (force?: boolean) => Promise<UpdateCheckResult>;
+  // Camoufox Engine Installer
+  isCamoufoxInstallModalOpen: boolean;
+  setIsCamoufoxInstallModalOpen: (open: boolean) => void;
+  handleCamoufoxInstallSuccess: () => void;
 }
 
 const DEFAULT_FOLDERS: Folder[] = [];
@@ -343,15 +350,26 @@ export const ProfileProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const [editingProxy, setEditingProxy] = useState<ProxyItem | null>(null);
   const [testingProxyTarget, setTestingProxyTarget] = useState<ProxyTestTarget | null>(null);
   const [warmingProfileIds, setWarmingProfileIds] = useState<string[]>([]);
+  const [queuedWarmupProfileIds, setQueuedWarmupProfileIds] = useState<string[]>([]);
 
   const isProfileWarming = useCallback((profileId: string) => {
     return warmingProfileIds.includes(profileId);
   }, [warmingProfileIds]);
 
+  const isProfileQueued = useCallback((profileId: string) => {
+    return queuedWarmupProfileIds.includes(profileId);
+  }, [queuedWarmupProfileIds]);
+
+  const getWarmupQueuePosition = useCallback((profileId: string) => {
+    const idx = queuedWarmupProfileIds.indexOf(profileId);
+    return idx >= 0 ? idx + 1 : 0;
+  }, [queuedWarmupProfileIds]);
+
   const stopProfileWarmup = useCallback(async (profileId: string) => {
     if (window.geenjutsuApi?.stopWarmup) {
       await window.geenjutsuApi.stopWarmup(profileId);
       setWarmingProfileIds(prev => prev.filter(id => id !== profileId));
+      setQueuedWarmupProfileIds(prev => prev.filter(id => id !== profileId));
       return true;
     }
     return false;
@@ -501,6 +519,8 @@ export const ProfileProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const [isImportProfileModalOpen, setIsImportProfileModalOpen] = useState<boolean>(false);
   const [updateData, setUpdateData] = useState<UpdateCheckResult | null>(null);
   const [isUpdateModalOpen, setIsUpdateModalOpen] = useState<boolean>(false);
+  const [isCamoufoxInstallModalOpen, setIsCamoufoxInstallModalOpen] = useState<boolean>(false);
+  const [pendingLaunchProfileId, setPendingLaunchProfileId] = useState<string | null>(null);
 
   const checkForUpdates = useCallback(async (force = false) => {
     try {
@@ -528,6 +548,29 @@ export const ProfileProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
     return () => clearTimeout(timer);
   }, [checkForUpdates]);
+
+  // Auto-verificação e instalação inicial do motor do navegador
+  useEffect(() => {
+    let isCancelled = false;
+    const checkEngine = async () => {
+      if (window.geenjutsuApi?.checkCamoufoxStatus) {
+        try {
+          const status = await window.geenjutsuApi.checkCamoufoxStatus();
+          if (!isCancelled && !status.installed) {
+            console.log('[Geenjutsu] Motor do navegador ainda não instalado. Iniciando setup automático...');
+            setIsCamoufoxInstallModalOpen(true);
+          }
+        } catch (e) {
+          console.warn('[Geenjutsu] Erro ao verificar motor do navegador:', e);
+        }
+      }
+    };
+    const timer = setTimeout(checkEngine, 1200);
+    return () => {
+      isCancelled = true;
+      clearTimeout(timer);
+    };
+  }, []);
   const [privacyConfig, setPrivacyConfig] = useState<PrivacyConfig>(() => {
     const saved = localStorage.getItem('geenjutsu_privacy_config');
     if (saved) {
@@ -791,16 +834,35 @@ export const ProfileProvider: React.FC<{ children: React.ReactNode }> = ({ child
       }
     }).catch(() => {});
 
-    // Listen to warmup progress & finish
+    window.geenjutsuApi?.getWarmupQueue?.().then((queuedIds: string[]) => {
+      if (Array.isArray(queuedIds) && queuedIds.length > 0) {
+        setQueuedWarmupProfileIds(queuedIds);
+      }
+    }).catch(() => {});
+
+    // Listen to warmup progress, queue updates & finish
     const unsubWarmupProgress = window.geenjutsuApi?.onWarmupProgress?.((data: any) => {
-      if (data && data.profileId && data.isRunning) {
-        setWarmingProfileIds(prev => (prev.includes(data.profileId) ? prev : [...prev, data.profileId]));
+      if (data && data.profileId) {
+        if (data.isRunning) {
+          setWarmingProfileIds(prev => (prev.includes(data.profileId) ? prev : [...prev, data.profileId]));
+          setQueuedWarmupProfileIds(prev => prev.filter(id => id !== data.profileId));
+        } else if (data.isQueued) {
+          setQueuedWarmupProfileIds(prev => (prev.includes(data.profileId) ? prev : [...prev, data.profileId]));
+          setWarmingProfileIds(prev => prev.filter(id => id !== data.profileId));
+        }
+      }
+    });
+
+    const unsubWarmupQueue = window.geenjutsuApi?.onWarmupQueueChanged?.((data: any) => {
+      if (data && Array.isArray(data.queue)) {
+        setQueuedWarmupProfileIds(data.queue.map((item: any) => item.profileId));
       }
     });
 
     const unsubWarmupFinished = window.geenjutsuApi?.onWarmupFinished?.((data: any) => {
       if (data && data.profileId) {
         setWarmingProfileIds(prev => prev.filter(id => id !== data.profileId));
+        setQueuedWarmupProfileIds(prev => prev.filter(id => id !== data.profileId));
         if (data.warmedCount) {
           setProfiles(prevProfiles =>
             prevProfiles.map(p =>
@@ -825,6 +887,7 @@ export const ProfileProvider: React.FC<{ children: React.ReactNode }> = ({ child
       unsubAutoLog?.();
       unsubAutoFinished?.();
       unsubWarmupProgress?.();
+      unsubWarmupQueue?.();
       unsubWarmupFinished?.();
     };
   }, []);
@@ -1268,6 +1331,18 @@ export const ProfileProvider: React.FC<{ children: React.ReactNode }> = ({ child
         await window.geenjutsuApi.stopProfile(id);
       }
     } else {
+      // Check if browser engine is installed before launching non-Android profile
+      if (target.runtime !== 'android' && window.geenjutsuApi?.checkCamoufoxStatus) {
+        try {
+          const camStatus = await window.geenjutsuApi.checkCamoufoxStatus();
+          if (!camStatus.installed) {
+            setPendingLaunchProfileId(id);
+            setIsCamoufoxInstallModalOpen(true);
+            return;
+          }
+        } catch {}
+      }
+
       const isEconomy = Boolean(options?.economyMode);
       if (isEconomy) {
         setEconomyProfileIds(prev => new Set(prev).add(id));
@@ -1289,6 +1364,20 @@ export const ProfileProvider: React.FC<{ children: React.ReactNode }> = ({ child
           const profilePayload = isEconomy ? { ...target, economyMode: true } : target;
           const res = await window.geenjutsuApi.launchProfile(profilePayload, { economyMode: isEconomy });
           if (res && !res.success) {
+            if (res.needsInstall) {
+              setPendingLaunchProfileId(id);
+              setIsCamoufoxInstallModalOpen(true);
+              setEconomyProfileIds(prev => {
+                if (!prev.has(id)) return prev;
+                const next = new Set(prev);
+                next.delete(id);
+                return next;
+              });
+              setProfiles(prev =>
+                prev.map(p => (p.id === id ? { ...p, status: 'idle', isEconomyMode: false } : p))
+              );
+              return;
+            }
             console.error('[Geenjutsu] Erro ao abrir perfil:', res.error);
             alert(`Não foi possível iniciar o perfil "${target.name}":\n\n${res.error || 'Erro desconhecido'}`);
             setEconomyProfileIds(prev => {
@@ -1337,6 +1426,16 @@ export const ProfileProvider: React.FC<{ children: React.ReactNode }> = ({ child
       }
     }
   };
+
+  const handleCamoufoxInstallSuccess = useCallback(() => {
+    if (pendingLaunchProfileId) {
+      const targetId = pendingLaunchProfileId;
+      setPendingLaunchProfileId(null);
+      setTimeout(() => {
+        toggleLaunchProfile(targetId);
+      }, 400);
+    }
+  }, [pendingLaunchProfileId]);
 
   const moveToTrash = (id: string) => {
     setProfiles(prev =>
@@ -1698,6 +1797,9 @@ export const ProfileProvider: React.FC<{ children: React.ReactNode }> = ({ child
         isProfileEconomy,
         warmingProfileIds,
         isProfileWarming,
+        queuedWarmupProfileIds,
+        isProfileQueued,
+        getWarmupQueuePosition,
         stopProfileWarmup,
         moveToTrash,
         restoreFromTrash,
@@ -1750,6 +1852,10 @@ export const ProfileProvider: React.FC<{ children: React.ReactNode }> = ({ child
         isUpdateModalOpen,
         setIsUpdateModalOpen,
         checkForUpdates,
+        // Camoufox Engine Installer
+        isCamoufoxInstallModalOpen,
+        setIsCamoufoxInstallModalOpen,
+        handleCamoufoxInstallSuccess,
       }}
     >
       {children}

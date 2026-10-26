@@ -6,6 +6,7 @@ import { fork, execSync, ChildProcess } from 'child_process';
 import { fileURLToPath } from 'url';
 import { seedAgedProfileDirectory } from './profileAgeSeeder';
 import { ProfileBookmarkSeeder } from './profileBookmarkSeeder';
+import { CamoufoxInstallerService } from './camoufoxInstallerService';
 
 export interface ProfileProxyConfig {
   type: 'socks5' | 'socks4' | 'http' | 'https';
@@ -70,47 +71,33 @@ export class CamoufoxManager {
   }
 
   /**
-   * Resolves the real system Node.js binary to prevent native ABI conflicts
-   * between Electron and C++ / ESM modules.
+   * Resolves the runtime Node.js binary.
+   * In Electron, process.execPath with ELECTRON_RUN_AS_NODE: '1' provides
+   * the bundled Node.js runtime with built-in ASAR support without requiring
+   * a system Node.js installation on Windows or macOS.
    */
   private static resolveNodeBinary(): string {
     if (process.env.NODE_BINARY && fs.existsSync(process.env.NODE_BINARY)) {
       return process.env.NODE_BINARY;
     }
+    return process.execPath;
+  }
 
-    try {
-      const whichCmd = process.platform === 'win32' ? 'where node' : 'which node';
-      const out = execSync(whichCmd, { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] })
-        .trim()
-        .split('\n')[0]
-        ?.trim();
-      if (out && fs.existsSync(out)) return out;
-    } catch {}
-
-    const home = os.homedir();
-    const nvmDir = path.join(home, '.nvm', 'versions', 'node');
-    if (fs.existsSync(nvmDir)) {
-      try {
-        const versions = fs.readdirSync(nvmDir);
-        for (const v of versions.reverse()) {
-          const bin = path.join(nvmDir, v, 'bin', 'node');
-          if (fs.existsSync(bin)) return bin;
-        }
-      } catch {}
-    }
-
+  /**
+   * Resolves the unpacked node_modules path so that workers executed via
+   * ELECTRON_RUN_AS_NODE: '1' can reliably resolve all ESM dependencies (camoufox-js, etc.)
+   * even when running from a packaged production ASAR environment.
+   */
+  private static getNodeModulesPath(): string {
+    const appPath = app ? app.getAppPath() : process.cwd();
+    const unpackedAppPath = appPath.replace(/app\.asar$/, 'app.asar.unpacked');
     const candidates = [
-      '/usr/local/bin/node',
-      '/usr/bin/node',
-      '/bin/node',
-      '/opt/homebrew/bin/node',
-      'C:\\Program Files\\nodejs\\node.exe',
-    ];
-    for (const c of candidates) {
-      if (fs.existsSync(c)) return c;
-    }
-
-    return 'node';
+      path.join(unpackedAppPath, 'node_modules'),
+      path.join(appPath, 'node_modules'),
+      path.resolve(process.cwd(), 'node_modules'),
+      process.env.NODE_PATH,
+    ].filter(Boolean);
+    return Array.from(new Set(candidates)).join(path.delimiter);
   }
 
   /**
@@ -132,15 +119,20 @@ export class CamoufoxManager {
       } catch {}
     }
 
+    const unpackedAppPath = appPath.replace(/app\.asar$/, 'app.asar.unpacked');
+    const resourcesPath = (process as any).resourcesPath || '';
+
     const candidates = [
       dest,
       src,
+      path.join(unpackedAppPath, 'dist-electron/camoufoxWorker.mjs'),
       path.join(appPath, 'dist-electron/camoufoxWorker.mjs'),
+      path.join(resourcesPath, 'app.asar.unpacked', 'dist-electron', 'camoufoxWorker.mjs'),
       path.join(appPath, 'src/main/workers/camoufoxWorker.mjs'),
     ];
 
     for (const p of candidates) {
-      if (fs.existsSync(p)) return p;
+      if (p && fs.existsSync(p)) return p;
     }
 
     return dest;
@@ -232,13 +224,46 @@ export class CamoufoxManager {
 
     return new Promise((resolve) => {
       let resolved = false;
-      const child = fork(workerScript, ['--generate-hardware', JSON.stringify(payload)], {
-        execPath: nodeBin,
-        stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
-      });
+
+      const configPath = path.join(
+        profileDir,
+        `.hw-config-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`
+      );
+
+      try {
+        fs.writeFileSync(configPath, JSON.stringify(payload), 'utf-8');
+      } catch (err) {
+        console.warn(`[CamoufoxManager] Erro ao gravar hw config temporário:`, err);
+      }
+
+      const cleanupConfig = () => {
+        try {
+          if (fs.existsSync(configPath)) {
+            fs.unlinkSync(configPath);
+          }
+        } catch {}
+      };
+
+      let child: any;
+      try {
+        child = fork(workerScript, ['--generate-hardware', '--config-file', configPath], {
+          execPath: nodeBin,
+          env: {
+            ...process.env,
+            ELECTRON_RUN_AS_NODE: '1',
+            NODE_PATH: this.getNodeModulesPath(),
+          },
+          stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
+        });
+      } catch (err) {
+        cleanupConfig();
+        console.error(`[CamoufoxManager] Erro ao spawnar worker de hardware:`, err);
+        return resolve(null);
+      }
 
       child.on('message', (msg: any) => {
         if (msg && msg.type === 'hardware_generated') {
+          cleanupConfig();
           if (!resolved) {
             resolved = true;
             resolve(msg.hardware);
@@ -247,6 +272,7 @@ export class CamoufoxManager {
       });
 
       child.on('exit', () => {
+        cleanupConfig();
         if (!resolved) {
           resolved = true;
           if (fs.existsSync(hardwarePath)) {
@@ -260,7 +286,8 @@ export class CamoufoxManager {
         }
       });
 
-      child.on('error', (err) => {
+      child.on('error', (err: any) => {
+        cleanupConfig();
         console.error(`[CamoufoxManager] Erro ao gerar hardware via worker:`, err);
         if (!resolved) {
           resolved = true;
@@ -316,6 +343,19 @@ export class CamoufoxManager {
       headless = false,
       economyMode = false,
     } = options;
+
+    // 0. Ensure Camoufox engine is installed
+    const camoufoxStatus = await CamoufoxInstallerService.checkStatus();
+    if (!camoufoxStatus.installed) {
+      console.log(`[CamoufoxManager] Camoufox não instalado. Disparando instalação automática para o perfil "${profileName}"...`);
+      const installRes = await CamoufoxInstallerService.install();
+      if (!installRes.success) {
+        return {
+          success: false,
+          error: `O navegador Camoufox Anti-Detect precisa ser instalado: ${installRes.error || 'Erro no download'}`,
+        };
+      }
+    }
 
     // 1. If already open, bring to front or navigate
     const existingWorker = this.activeWorkers.get(profileId);
@@ -375,10 +415,42 @@ export class CamoufoxManager {
     return new Promise<{ success: boolean; error?: string }>((resolve) => {
       let isResolved = false;
 
-      const child = fork(workerScript, [JSON.stringify(workerPayload)], {
-        execPath: nodeBin,
-        stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
-      });
+      const configPath = path.join(
+        profileDir,
+        `.worker-config-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`
+      );
+
+      try {
+        fs.writeFileSync(configPath, JSON.stringify(workerPayload), 'utf-8');
+      } catch (err: any) {
+        console.error(`[CamoufoxManager] Erro ao salvar worker-config para ${profileName}:`, err);
+        return resolve({ success: false, error: err?.message || 'Falha ao salvar configuração temporária.' });
+      }
+
+      const cleanupConfig = () => {
+        try {
+          if (fs.existsSync(configPath)) {
+            fs.unlinkSync(configPath);
+          }
+        } catch {}
+      };
+
+      let child: any;
+      try {
+        child = fork(workerScript, ['--config-file', configPath], {
+          execPath: nodeBin,
+          env: {
+            ...process.env,
+            ELECTRON_RUN_AS_NODE: '1',
+            NODE_PATH: this.getNodeModulesPath(),
+          },
+          stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
+        });
+      } catch (err: any) {
+        cleanupConfig();
+        console.error(`[CamoufoxManager] Erro ao lançar worker para ${profileName}:`, err);
+        return resolve({ success: false, error: err?.message || 'Falha ao lançar processo do navegador.' });
+      }
 
       this.activeWorkers.set(profileId, child);
       this.emit('status_changed', { profileId, status: 'launching', economyMode });
@@ -387,6 +459,7 @@ export class CamoufoxManager {
         if (!msg || typeof msg !== 'object') return;
 
         if (msg.type === 'ready') {
+          cleanupConfig();
           console.log(`[CamoufoxManager] Perfil "${profileName}" pronto e ativo! (Modo Economia: ${Boolean(economyMode)})`);
           this.emit('status_changed', { profileId, status: 'running', economyMode });
           if (!isResolved) {
@@ -400,13 +473,14 @@ export class CamoufoxManager {
         } else if (msg.type === 'automation_finished') {
           this.emit('automation_finished', msg);
         } else if (msg.type === 'closed') {
+          cleanupConfig();
           this.activeWorkers.delete(profileId);
           this.emit('status_changed', { profileId, status: 'idle', economyMode: false });
         }
-
       });
 
-      child.on('error', (err) => {
+      child.on('error', (err: any) => {
+        cleanupConfig();
         console.error(`[CamoufoxManager] Erro no worker do perfil ${profileId}:`, err);
         this.activeWorkers.delete(profileId);
         this.emit('status_changed', { profileId, status: 'idle', economyMode: false });
@@ -416,7 +490,8 @@ export class CamoufoxManager {
         }
       });
 
-      child.on('exit', (code) => {
+      child.on('exit', (code: number | null) => {
+        cleanupConfig();
         console.log(`[CamoufoxManager] Worker do perfil ${profileId} finalizado (código: ${code})`);
         this.activeWorkers.delete(profileId);
         this.emit('status_changed', { profileId, status: 'idle', economyMode: false });
@@ -429,6 +504,7 @@ export class CamoufoxManager {
 
       // Safety timeout
       setTimeout(() => {
+        cleanupConfig();
         if (!isResolved) {
           isResolved = true;
           resolve({ success: true });

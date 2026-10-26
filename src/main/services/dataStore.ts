@@ -1,6 +1,7 @@
 import { app } from 'electron';
 import path from 'path';
 import fs from 'fs';
+import { ANDROID_STEALTH_CONFIG } from '../../shared/androidConfig';
 
 export interface AppSettings {
   closeAction?: 'ask' | 'quit' | 'background';
@@ -54,6 +55,20 @@ export class DataStore {
           if (p.status === 'launching' || p.status === 'running') {
             p.status = 'idle';
           }
+
+          // Migração suave de perfis Android legados para a nova imagem stealth
+          if (p.runtime === 'android' || p.os === 'android') {
+            const dev = ANDROID_STEALTH_CONFIG.DEVICE;
+            if (!p.device || p.device.model !== dev.model) {
+              p.device = { ...dev };
+              p.browser = `${dev.brand} ${dev.name} (Android ${dev.androidVersion})`;
+              p.width = dev.width;
+              p.height = dev.height;
+              p.dpi = dev.dpi;
+              p.androidVersion = dev.androidVersion;
+            }
+          }
+
           return p;
         });
       }

@@ -11,6 +11,7 @@ import { ProxiesView } from './views/ProxiesView';
 import { AutomationsView } from './views/AutomationsView';
 import { TablesView } from './views/TablesView';
 import { ReferralView } from './views/ReferralView';
+import { IntegrationsView } from './views/IntegrationsView';
 import { SecurityModal } from './components/security/SecurityModal';
 import { LockScreen } from './components/security/LockScreen';
 import { SettingsModal } from './views/SettingsModal';
@@ -19,6 +20,7 @@ import { OnboardingModal } from './components/onboarding/OnboardingModal';
 import { CloseConfirmModal } from './components/layout/CloseConfirmModal';
 import { ProxyTestModal } from './components/proxies/ProxyTestModal';
 import { UpdateModal } from './components/updater/UpdateModal';
+import { CamoufoxInstallModal } from './components/profiles/CamoufoxInstallModal';
 import { useProfiles } from './context/ProfileContext';
 
 export const App: React.FC = () => {
@@ -30,6 +32,9 @@ export const App: React.FC = () => {
     isUpdateModalOpen,
     setIsUpdateModalOpen,
     updateData,
+    isCamoufoxInstallModalOpen,
+    setIsCamoufoxInstallModalOpen,
+    handleCamoufoxInstallSuccess,
   } = useProfiles();
 
   // If app lock is active, show only TitleBar with window controls and LockScreen
@@ -61,12 +66,14 @@ export const App: React.FC = () => {
           {activeTab === 'automations' && <AutomationsView />}
           {activeTab === 'tables' && <TablesView />}
           {activeTab === 'referral' && <ReferralView />}
+          {activeTab === 'integrations' && <IntegrationsView />}
           {activeTab !== 'profiles' &&
             activeTab !== 'folders' &&
             activeTab !== 'proxies' &&
             activeTab !== 'automations' &&
             activeTab !== 'tables' &&
-            activeTab !== 'referral' && (
+            activeTab !== 'referral' &&
+            activeTab !== 'integrations' && (
               <div className="flex-1 h-full flex items-center justify-center text-[var(--muted)] text-xs">
                 Em breve
               </div>
@@ -89,6 +96,11 @@ export const App: React.FC = () => {
         isOpen={isUpdateModalOpen}
         onClose={() => setIsUpdateModalOpen(false)}
         updateData={updateData}
+      />
+      <CamoufoxInstallModal
+        isOpen={isCamoufoxInstallModalOpen}
+        onClose={() => setIsCamoufoxInstallModalOpen(false)}
+        onSuccess={handleCamoufoxInstallSuccess}
       />
     </div>
   );

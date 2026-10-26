@@ -6,10 +6,10 @@ import { Button } from '../ui/Button';
 import { Badge } from '../ui/Badge';
 import { useProfiles } from '../../context/ProfileContext';
 import { useI18n } from '../../context/I18nContext';
-import { ProfileCreateInput, AndroidDeviceSpec } from '../../types';
+import { ProfileCreateInput } from '../../types';
 import { parseProxyString, buildProxyString, getCountryFlag } from '../../utils/proxyParser';
 import { generateProfileFingerprint } from '../../utils/fingerprintGenerator';
-import { DeviceCatalogService } from '../../../shared/deviceCatalog';
+import { ANDROID_STEALTH_CONFIG, generateAndroidIdentity } from '../../../shared/androidConfig';
 import { AndroidSetupModal } from './AndroidSetupModal';
 import { clsx } from 'clsx';
 
@@ -63,7 +63,6 @@ export const CreateProfileModal: React.FC = () => {
       setFolderId('');
       setRuntime('browser');
       setIsAndroidTooltipOpen(false);
-      setSelectedAndroidDevice(DeviceCatalogService.getRandom(undefined, '12'));
 
       // Check android requirements
       if (window.geenjutsuApi?.checkAndroidDependencies) {
@@ -81,7 +80,6 @@ export const CreateProfileModal: React.FC = () => {
   const [isAndroidSetupModalOpen, setIsAndroidSetupModalOpen] = useState(false);
   const [isAndroidTooltipOpen, setIsAndroidTooltipOpen] = useState(false);
   const tooltipTimeoutRef = React.useRef<NodeJS.Timeout | null>(null);
-  const [selectedAndroidDevice, setSelectedAndroidDevice] = useState<AndroidDeviceSpec>(() => DeviceCatalogService.getRandom(undefined, '12'));
 
   const handleMouseEnterAndroid = () => {
     if (tooltipTimeoutRef.current) {
@@ -230,7 +228,8 @@ export const CreateProfileModal: React.FC = () => {
       const profileName = i === 0 ? name.trim() : `${name.trim()} #${i + 1}`;
 
       if (runtime === 'android') {
-        const dev = selectedAndroidDevice;
+        const dev = ANDROID_STEALTH_CONFIG.DEVICE;
+        const identity = generateAndroidIdentity();
         inputs.push({
           name: profileName,
           folderId: folderId || '',
@@ -241,12 +240,32 @@ export const CreateProfileModal: React.FC = () => {
           tags,
           proxy: proxyConfig,
           runtime: 'android',
-          device: dev,
+          device: {
+            id: dev.id,
+            brand: dev.brand,
+            name: dev.name,
+            model: dev.model,
+            device: dev.device,
+            board: dev.board,
+            fingerprint: dev.fingerprint,
+            securityPatch: dev.securityPatch,
+            androidVersion: dev.androidVersion,
+            resolution: dev.resolution,
+            width: dev.width,
+            height: dev.height,
+            dpi: dev.dpi,
+            abi: dev.abi,
+            gpu: dev.gpu,
+          },
           androidVersion: dev.androidVersion,
           width: dev.width,
           height: dev.height,
           dpi: dev.dpi,
-        });
+          androidId: identity.androidId,
+          macAddress: identity.macAddress,
+          serialNumber: identity.serialNo,
+          imei: identity.imei1,
+        } as any);
       } else {
         const fingerprint = generateProfileFingerprint(os, proxyConfig);
         inputs.push({
@@ -558,8 +577,8 @@ export const CreateProfileModal: React.FC = () => {
           </div>
         </div>
 
-        {/* OS or Android Hardware Card */}
-        {runtime === 'browser' ? (
+        {/* OS Selection (Browser Mode) */}
+        {runtime === 'browser' && (
           <div className="space-y-1.5">
             <label className="text-xs font-medium text-[var(--muted-fg)] select-none">
               {t.createModal.os}
@@ -580,43 +599,6 @@ export const CreateProfileModal: React.FC = () => {
                   <span>{osOption.label}</span>
                 </button>
               ))}
-            </div>
-          </div>
-        ) : (
-          <div className="space-y-1.5">
-            <div className="flex items-center justify-between">
-              <label className="text-xs font-medium text-[var(--muted-fg)] select-none">
-                Aparelho Android Real (Fingerprint)
-              </label>
-              <button
-                type="button"
-                onClick={() => setSelectedAndroidDevice(DeviceCatalogService.getRandom(undefined, '12'))}
-                className="text-[11px] text-red-500 hover:text-red-400 font-medium flex items-center gap-1 cursor-pointer"
-                title="Sortear outro modelo de smartphone real"
-              >
-                <i className="ri-refresh-line" />
-                <span>Sortear Outro</span>
-              </button>
-            </div>
-            <div className="p-3 bg-[var(--muted-bg)]/60 rounded-xl border border-[var(--border)] flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2.5 min-w-0">
-                <div className="w-8 h-8 rounded-lg bg-[var(--card)] border border-[var(--border)] flex items-center justify-center text-emerald-500 text-base flex-shrink-0">
-                  <i className="ri-smartphone-line" />
-                </div>
-                <div className="min-w-0">
-                  <div className="flex items-center gap-1.5">
-                    <span className="font-semibold text-xs text-[var(--foreground)] truncate">
-                      {selectedAndroidDevice.brand} {selectedAndroidDevice.name}
-                    </span>
-                    <span className="text-[9.5px] font-mono px-1.5 py-0.2 rounded bg-[var(--card)] text-[var(--muted-fg)] border border-[var(--border)]">
-                      Android {selectedAndroidDevice.androidVersion}
-                    </span>
-                  </div>
-                  <span className="text-[10.5px] font-mono text-[var(--muted)] truncate block mt-0.5">
-                    {selectedAndroidDevice.model} · {selectedAndroidDevice.resolution} · {selectedAndroidDevice.dpi}dpi
-                  </span>
-                </div>
-              </div>
             </div>
           </div>
         )}

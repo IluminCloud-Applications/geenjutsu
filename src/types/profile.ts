@@ -54,6 +54,8 @@ export interface WarmupProgress {
   totalSites?: number;
   remainingSeconds?: number;
   progressPercent?: number;
+  isQueued?: boolean;
+  queuePosition?: number;
 }
 
 export interface Profile {
@@ -94,6 +96,8 @@ export interface Profile {
   dpi?: number;
   androidId?: string;
   macAddress?: string;
+  serialNumber?: string;
+  imei?: string;
 }
 
 export type ProfileCreateInput = Omit<Profile, 'id' | 'createdAt' | 'updatedAt' | 'status' | 'isTrash' | 'isPinned' | 'pinnedAt'>;

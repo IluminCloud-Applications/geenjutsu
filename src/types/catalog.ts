@@ -15,6 +15,8 @@ export interface AndroidDeviceSpec {
   abi: string; // "x86_64,arm64-v8a"
   gpu: string; // "Adreno 750"
   isFavorite?: boolean;
+  serialNumber?: string;
+  imei?: string;
 }
 
 export type BrandFilter = 'all' | 'Samsung' | 'Google' | 'Xiaomi' | 'Motorola' | 'OnePlus';

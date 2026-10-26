@@ -1,4 +1,4 @@
-export type TableColumnType = 'text' | 'number' | 'select' | 'profile' | 'password' | 'date';
+export type TableColumnType = 'text' | 'number' | 'select' | 'profile' | 'password' | 'date' | '2fa';
 
 export interface TableColumn {
   id: string;
