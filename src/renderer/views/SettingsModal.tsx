@@ -102,7 +102,7 @@ export const SettingsModal: React.FC = () => {
               <BrandTextLogo heightClass="h-4" className="mb-1" />
               <div className="flex items-center gap-2">
                 <span className="text-[11px] text-[var(--muted)] font-mono leading-none">
-                  v{updateData?.currentVersion || '1.0.0'}
+                  v{updateData?.currentVersion || '1.0.1'}
                 </span>
                 <button
                   type="button"
@@ -374,7 +374,7 @@ export const SettingsModal: React.FC = () => {
         {/* Version */}
         <div className="pt-1 border-t border-[var(--border)]/60 flex items-center justify-between text-xs text-[var(--muted)]">
           <span>{t.settings.version}</span>
-          <span className="font-mono text-[var(--foreground)] opacity-60">v1.0.0</span>
+          <span className="font-mono text-[var(--foreground)] opacity-60">v{updateData?.currentVersion || '1.0.1'}</span>
         </div>
       </div>
     </Modal>

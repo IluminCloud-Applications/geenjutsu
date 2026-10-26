@@ -33,7 +33,7 @@ export class UpdateService {
     } catch {
       // fallback
     }
-    return '1.0.0';
+    return '1.0.1';
   }
 
   static getPlatform(): 'win' | 'mac' | 'linux' {

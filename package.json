@@ -1,6 +1,6 @@
 {
   "name": "geenjutsu",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Geenjutsu - Advanced Anti-Detect Browser Studio",
   "main": "dist-electron/main.js",
   "type": "module",

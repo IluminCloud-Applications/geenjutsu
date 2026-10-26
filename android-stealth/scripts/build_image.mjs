@@ -811,6 +811,7 @@ function writeDockerfileAndBuild() {
   console.log('[6/6] Generating Dockerfile and building image geenjutsu/android12-camoufox:latest...');
   const dockerfile = [
     'FROM redroid/redroid:12.0.0-latest',
+    'LABEL org.opencontainers.image.source=https://github.com/IluminCloud-Applications/geenjutsu',
     '',
     'COPY build/overlay/ /',
     'RUN ["/vendor/bin/image_cleaner"]',

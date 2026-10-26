@@ -1,4 +1,5 @@
 FROM redroid/redroid:12.0.0-latest
+LABEL org.opencontainers.image.source=https://github.com/IluminCloud-Applications/geenjutsu
 
 COPY build/overlay/ /
 RUN ["/vendor/bin/image_cleaner"]

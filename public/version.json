@@ -1,11 +1,11 @@
 {
-  "version": "1.0.0",
+  "version": "1.0.1",
   "minRequiredVersion": "1.0.0",
-  "releaseDate": "2026-10-15",
+  "releaseDate": "2026-10-26",
   "notes": [
-    "Lançamento inicial do Geenjutsu Studio",
-    "Anti-detect browser studio com isolamento multicontas e fingerprinting avançado",
-    "Compilação e suporte multiplataforma (Windows, Linux, macOS)"
+    "Geenjutsu v1.0.1 - Suporte a Android Stealth e otimizações gerais",
+    "Integração completa de perfis Android com fingerprinting isolado Samsung Galaxy S22",
+    "Melhorias de desempenho e correções de estabilidade"
   ],
   "downloadUrls": {
     "win": "https://github.com/IluminCloud-Applications/geenjutsu/releases/latest",

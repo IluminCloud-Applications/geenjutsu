@@ -531,8 +531,8 @@ export const ProfileProvider: React.FC<{ children: React.ReactNode }> = ({ child
       console.error('Error checking updates:', err);
       return {
         hasUpdate: false,
-        currentVersion: '1.0.0',
-        latestVersion: '1.0.0',
+        currentVersion: '1.0.1',
+        latestVersion: '1.0.1',
         downloadUrl: '',
       };
     }
